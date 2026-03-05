@@ -1,6 +1,4 @@
 import {
-	CachedMetadata,
-	HeadingCache,
 	parseFrontMatterAliases,
 	Plugin,
 	prepareSimpleSearch,
@@ -24,71 +22,6 @@ import {
 } from "markdown-patch";
 import mime from "mime-types";
 import openapiYaml from "./openapi.yaml";
-
-// --- Types ---
-
-interface HeadingBoundary {
-	start: { line: number };
-	end?: { line: number };
-}
-
-// --- Heading Utils (reimplemented from obsidian-local-rest-api/src/utils.ts) ---
-
-function findHeadingBoundary(
-	fileCache: CachedMetadata,
-	headingPath: string[]
-): HeadingBoundary | null {
-	const reversedHeadingPath = [...headingPath].reverse();
-	const cursorHeadingPath: HeadingCache[] = [];
-
-	for (const [headingIdx, heading] of (fileCache.headings ?? []).entries()) {
-		cursorHeadingPath[heading.level] = heading;
-		cursorHeadingPath.splice(heading.level + 1);
-
-		const reversedCurrentCursor = [
-			...cursorHeadingPath.map((h) => h.heading),
-		].reverse();
-		let matchesRequestedHeading = true;
-		for (const [idx, element] of reversedHeadingPath.entries()) {
-			if (reversedCurrentCursor[idx] != element) {
-				matchesRequestedHeading = false;
-				break;
-			}
-		}
-
-		if (matchesRequestedHeading) {
-			const start = heading.position.end;
-			const endHeading = (fileCache.headings ?? [])
-				.slice(headingIdx + 1)
-				.find((h) => h.level <= heading.level);
-			const end = endHeading?.position.start;
-			return { start, end };
-		}
-	}
-
-	return null;
-}
-
-function getSplicePosition(
-	fileLines: string[],
-	heading: HeadingBoundary,
-	insert: boolean,
-	ignoreNewLines: boolean
-): number {
-	let splicePosition =
-		insert === false
-			? (heading.end?.line ?? fileLines.length)
-			: heading.start.line + 1;
-
-	if (!ignoreNewLines || insert) {
-		return splicePosition;
-	}
-
-	while (fileLines[splicePosition - 1] === "") {
-		splicePosition--;
-	}
-	return splicePosition;
-}
 
 // --- Async handler wrapper (Express doesn't catch async rejections) ---
 
@@ -360,95 +293,7 @@ class NoteHandler {
 
 		res.set("Content-Location", encodeURI(file.path));
 
-		// V2 (legacy heading-based) when Heading is present but no Target-Type
-		if (req.get("Heading") && !req.get("Target-Type")) {
-			return this.patchV2(file, req, res);
-		}
 		return this.patchV3(file, req, res);
-	}
-
-	private async patchV2(file: TFile, req: any, res: any): Promise<void> {
-		const headingBoundary = req.get("Heading-Boundary") || "::";
-		const heading = (req.get("Heading") || "")
-			.split(headingBoundary)
-			.filter(Boolean);
-		const contentPosition = req.get("Content-Insertion-Position");
-		let insert = false;
-		let aboveNewLine = false;
-
-		if (contentPosition === undefined) {
-			insert = false;
-		} else if (contentPosition === "beginning") {
-			insert = true;
-		} else if (contentPosition === "end") {
-			insert = false;
-		} else {
-			res.status(400).json({
-				message: "Invalid Content-Insertion-Position value.",
-				errorCode: 40050,
-			});
-			return;
-		}
-
-		if (typeof req.body !== "string") {
-			res.status(400).json({
-				message: "Request body must be text content.",
-				errorCode: 40010,
-			});
-			return;
-		}
-
-		if (typeof req.get("Content-Insertion-Ignore-Newline") === "string") {
-			aboveNewLine =
-				req.get("Content-Insertion-Ignore-Newline")?.toLowerCase() ===
-				"true";
-		}
-
-		if (!heading.length) {
-			res.status(400).json({
-				message: "Missing Heading header.",
-				errorCode: 40051,
-			});
-			return;
-		}
-
-		const cache = this.app.metadataCache.getFileCache(file);
-		if (!cache) {
-			res.status(500).json({
-				message: "Metadata cache not available for this file.",
-			});
-			return;
-		}
-
-		const position = findHeadingBoundary(cache, heading);
-		if (!position) {
-			res.status(400).json({
-				message: "Invalid heading path.",
-				errorCode: 40052,
-			});
-			return;
-		}
-
-		const fileContents = await this.app.vault.read(file);
-		const fileLines = fileContents.split("\n");
-		const splicePosition = getSplicePosition(
-			fileLines,
-			position,
-			insert,
-			aboveNewLine
-		);
-		fileLines.splice(splicePosition, 0, req.body);
-		const content = fileLines.join("\n");
-
-		await this.app.vault.adapter.write(file.path, content);
-
-		res.header("Deprecation", 'true; sunset-version="4.0"')
-			.header(
-				"Link",
-				'<https://github.com/coddingtonbear/obsidian-local-rest-api/wiki/Changes-to-PATCH-requests-between-versions-2.0-and-3.0>; rel="alternate"'
-			)
-			.status(200)
-			.send(content);
 	}
 
 	private async patchV3(file: TFile, req: any, res: any): Promise<void> {
@@ -642,3 +487,5 @@ declare module "obsidian" {
 		): EventRef;
 	}
 }
+
+export { AliasCache, NoteHandler, asyncHandler, CONTENT_TYPE_MARKDOWN, CONTENT_TYPE_NOTE_JSON };

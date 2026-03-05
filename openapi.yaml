@@ -231,43 +231,12 @@ paths:
         - "Note"
       summary: "Patch a note by wiki-link name"
       description: |
-        Applies a structured patch to a note. Supports two modes:
-
-        **V2 (legacy heading-based):** Set the `Heading` header (without `Target-Type`).
-        Inserts content under the specified heading.
-
-        **V3 (structured patch):** Set `Target-Type`, `Operation`, and `Target` headers.
+        Applies a structured patch to a note using `Target-Type`, `Operation`, and `Target` headers.
         Supports append/prepend/replace on headings, blocks, and frontmatter fields.
-
-        V2 is deprecated and will be removed in version 4.0.
       parameters:
-        - name: "Heading"
-          in: "header"
-          description: "V2 only: heading path (use `Heading-Boundary` delimiter for nested headings)."
-          schema:
-            type: "string"
-        - name: "Heading-Boundary"
-          in: "header"
-          description: "V2 only: delimiter for nested heading paths. Default: `::`"
-          schema:
-            type: "string"
-            default: "::"
-        - name: "Content-Insertion-Position"
-          in: "header"
-          description: "V2 only: `beginning` or `end` of the heading section."
-          schema:
-            type: "string"
-            enum:
-              - "beginning"
-              - "end"
-        - name: "Content-Insertion-Ignore-Newline"
-          in: "header"
-          description: "V2 only: if `true`, skip trailing blank lines when inserting at end."
-          schema:
-            type: "string"
         - name: "Operation"
           in: "header"
-          description: "V3: the patch operation."
+          description: "The patch operation."
           schema:
             type: "string"
             enum:
@@ -276,7 +245,7 @@ paths:
               - "replace"
         - name: "Target-Type"
           in: "header"
-          description: "V3: type of target to patch."
+          description: "Type of target to patch."
           schema:
             type: "string"
             enum:
@@ -285,28 +254,28 @@ paths:
               - "frontmatter"
         - name: "Target"
           in: "header"
-          description: "V3: the target identifier (heading path, block ID, or frontmatter key). URL-encoded."
+          description: "The target identifier (heading path, block ID, or frontmatter key). URL-encoded."
           schema:
             type: "string"
         - name: "Target-Delimiter"
           in: "header"
-          description: "V3: delimiter for nested heading paths. Default: `::`"
+          description: "Delimiter for nested heading paths. Default: `::`"
           schema:
             type: "string"
             default: "::"
         - name: "Trim-Target-Whitespace"
           in: "header"
-          description: "V3: if `true`, trim whitespace around the target content."
+          description: "If `true`, trim whitespace around the target content."
           schema:
             type: "string"
         - name: "Create-Target-If-Missing"
           in: "header"
-          description: "V3: if `true`, create the target (heading/block/frontmatter key) if it doesn't exist."
+          description: "If `true`, create the target (heading/block/frontmatter key) if it doesn't exist."
           schema:
             type: "string"
         - name: "Apply-If-Content-Preexists"
           in: "header"
-          description: "V3: if `true`, apply the patch even if the content already exists at the target."
+          description: "If `true`, apply the patch even if the content already exists at the target."
           schema:
             type: "string"
       requestBody:
