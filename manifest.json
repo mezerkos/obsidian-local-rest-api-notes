@@ -1,5 +1,5 @@
 {
-	"id": "obsidian-local-rest-api-note-extension",
+	"id": "obsidian-local-rest-api-notes",
 	"name": "Local REST API Note Extension",
 	"version": "1.0.0",
 	"minAppVersion": "0.15.0",

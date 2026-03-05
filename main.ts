@@ -7,6 +7,13 @@ import {
 	TFile,
 } from "obsidian";
 import { getAPI, LocalRestApiPublicApi } from "obsidian-local-rest-api";
+
+// The upstream npm package types are outdated; augment with methods that exist at runtime
+declare module "obsidian-local-rest-api" {
+	interface LocalRestApiPublicApi {
+		unregister(): void;
+	}
+}
 import {
 	applyPatch,
 	ContentType,
@@ -16,15 +23,7 @@ import {
 	PatchTargetType,
 } from "markdown-patch";
 import mime from "mime-types";
-
-// --- Type augmentation for obsidian-local-rest-api ---
-
-declare module "obsidian-local-rest-api" {
-	interface LocalRestApiPublicApi {
-		getFileMetadataObject(file: import("obsidian").TFile): Promise<Record<string, unknown>>;
-		unregister(): void;
-	}
-}
+import openapiYaml from "./openapi.yaml";
 
 // --- Types ---
 
@@ -89,6 +88,23 @@ function getSplicePosition(
 		splicePosition--;
 	}
 	return splicePosition;
+}
+
+// --- Async handler wrapper (Express doesn't catch async rejections) ---
+
+function asyncHandler(
+	fn: (req: any, res: any) => Promise<void>
+): (req: any, res: any) => void {
+	return (req: any, res: any) => {
+		fn(req, res).catch((err: Error) => {
+			console.error("[Note API Extension]", err);
+			if (!res.headersSent) {
+				res.status(500).json({
+					message: err.message || "Internal server error",
+				});
+			}
+		});
+	};
 }
 
 // --- Content Types ---
@@ -169,12 +185,10 @@ class AliasCache {
 
 class NoteHandler {
 	private app: Plugin["app"];
-	private api: LocalRestApiPublicApi;
 	private aliases: AliasCache;
 
-	constructor(app: Plugin["app"], api: LocalRestApiPublicApi) {
+	constructor(app: Plugin["app"]) {
 		this.app = app;
-		this.api = api;
 		this.aliases = new AliasCache(app);
 	}
 
@@ -212,27 +226,41 @@ class NoteHandler {
 		res.status(404).json(body);
 	}
 
-	private requireAuth(req: any, res: any): boolean {
-		if (!this.api.requestIsAuthenticated(req)) {
-			res.status(401).json({
-				message: "Authorization required.",
-				errorCode: 40101,
-			});
-			return false;
-		}
-		return true;
-	}
-
 	private extractName(req: any): string {
 		return decodeURIComponent(
 			req.path.slice(req.path.indexOf("/", 1) + 1)
 		);
 	}
 
+	/** Build a NoteJson metadata object for a file (same as upstream getFileMetadataObject) */
+	private async getFileMetadata(file: TFile): Promise<Record<string, unknown>> {
+		const cache = this.app.metadataCache.getFileCache(file);
+
+		const frontmatter = { ...(cache?.frontmatter ?? {}) };
+		delete frontmatter.position;
+
+		const directTags = (cache?.tags ?? [])
+			.filter((tag: any) => tag)
+			.map((tag: any) => tag.tag);
+		const frontmatterTags = Array.isArray(frontmatter.tags)
+			? frontmatter.tags
+			: [];
+		const tags: string[] = [...frontmatterTags, ...directTags]
+			.filter((tag: any) => tag)
+			.map((tag: any) => tag.toString().replace(/^#/, ""))
+			.filter((value: string, index: number, self: string[]) => self.indexOf(value) === index);
+
+		return {
+			tags,
+			frontmatter,
+			stat: file.stat,
+			path: file.path,
+			content: await this.app.vault.cachedRead(file),
+		};
+	}
+
 	// --- GET /note/* ---
 	async handleGet(req: any, res: any): Promise<void> {
-		if (!this.requireAuth(req, res)) return;
-
 		const name = this.extractName(req);
 		const file = this.resolveNote(name);
 		if (!file) {
@@ -244,7 +272,7 @@ class NoteHandler {
 
 		// Accept: application/vnd.olrapi.note+json → structured JSON
 		if (req.headers.accept === CONTENT_TYPE_NOTE_JSON) {
-			const metadata = await this.api.getFileMetadataObject(file);
+			const metadata = await this.getFileMetadata(file);
 			res.setHeader("Content-Type", CONTENT_TYPE_NOTE_JSON);
 			res.send(JSON.stringify(metadata, null, 2));
 			return;
@@ -264,8 +292,6 @@ class NoteHandler {
 
 	// --- PUT /note/* ---
 	async handlePut(req: any, res: any): Promise<void> {
-		if (!this.requireAuth(req, res)) return;
-
 		const name = this.extractName(req);
 		const file = this.resolveNote(name);
 		if (!file) {
@@ -296,8 +322,6 @@ class NoteHandler {
 
 	// --- POST /note/* (append) ---
 	async handlePost(req: any, res: any): Promise<void> {
-		if (!this.requireAuth(req, res)) return;
-
 		const name = this.extractName(req);
 		const file = this.resolveNote(name);
 		if (!file) {
@@ -327,8 +351,6 @@ class NoteHandler {
 
 	// --- PATCH /note/* ---
 	async handlePatch(req: any, res: any): Promise<void> {
-		if (!this.requireAuth(req, res)) return;
-
 		const name = this.extractName(req);
 		const file = this.resolveNote(name);
 		if (!file) {
@@ -509,8 +531,6 @@ class NoteHandler {
 
 	// --- DELETE /note/* ---
 	async handleDelete(req: any, res: any): Promise<void> {
-		if (!this.requireAuth(req, res)) return;
-
 		const name = this.extractName(req);
 		const file = this.resolveNote(name);
 		if (!file) {
@@ -525,8 +545,6 @@ class NoteHandler {
 
 	// --- POST /note-move/ ---
 	async handleMove(req: any, res: any): Promise<void> {
-		if (!this.requireAuth(req, res)) return;
-
 		const from = req.body?.from;
 		const to = req.body?.to;
 
@@ -562,19 +580,26 @@ export default class NoteApiExtensionPlugin extends Plugin {
 
 	registerRoutes() {
 		this.api = getAPI(this.app, this.manifest);
-		const handler = new NoteHandler(this.app, this.api);
+		const handler = new NoteHandler(this.app);
 
 		this.api
 			.addRoute("/note/*")
-			.get(handler.handleGet.bind(handler))
-			.put(handler.handlePut.bind(handler))
-			.post(handler.handlePost.bind(handler))
-			.patch(handler.handlePatch.bind(handler))
-			.delete(handler.handleDelete.bind(handler));
+			.get(asyncHandler(handler.handleGet.bind(handler)))
+			.put(asyncHandler(handler.handlePut.bind(handler)))
+			.post(asyncHandler(handler.handlePost.bind(handler)))
+			.patch(asyncHandler(handler.handlePatch.bind(handler)))
+			.delete(asyncHandler(handler.handleDelete.bind(handler)));
 
 		this.api
 			.addRoute("/note-move/")
-			.post(handler.handleMove.bind(handler));
+			.post(asyncHandler(handler.handleMove.bind(handler)));
+
+		this.api
+			.addRoute("/note-api.yaml")
+			.get((_req: any, res: any) => {
+				res.set("Content-Type", "text/yaml; charset=utf-8");
+				res.send(openapiYaml);
+			});
 	}
 
 	async onload() {

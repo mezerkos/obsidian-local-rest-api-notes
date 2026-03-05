@@ -1,5 +1,5 @@
 {
-	"name": "obsidian-local-rest-api-note-extension",
+	"name": "obsidian-local-rest-api-notes",
 	"version": "1.0.0",
 	"description": "Adds /note/* wiki-link resolution endpoints to Obsidian Local REST API",
 	"main": "main.js",
