@@ -1,10 +1,9 @@
 {
-	"id": "obsidian-local-rest-api-sample-api-extension",
-	"name": "Local REST API Sample API Extension",
+	"id": "obsidian-local-rest-api-note-extension",
+	"name": "Local REST API Note Extension",
 	"version": "1.0.0",
 	"minAppVersion": "0.15.0",
-	"description": "Example of how you can add additional routes to Obsidian Local REST API via a plugin",
-	"author": "Obsidian",
-	"authorUrl": "https://coddingtonbear.net/",
+	"description": "Adds /note/* endpoints to Local REST API for wiki-link name resolution, alias lookup, and note move/rename",
+	"author": "thjlin",
 	"isDesktopOnly": true
 }
