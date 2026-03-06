@@ -177,7 +177,9 @@ class NoteHandler {
 			.map((tag: any) => tag.tag);
 		const frontmatterTags = Array.isArray(frontmatter.tags)
 			? frontmatter.tags
-			: [];
+			: typeof frontmatter.tags === "string"
+				? [frontmatter.tags]
+				: [];
 		const tags: string[] = [...frontmatterTags, ...directTags]
 			.filter((tag: any) => tag)
 			.map((tag: any) => tag.toString().replace(/^#/, ""))

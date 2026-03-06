@@ -343,6 +343,110 @@ describe("NoteHandler", () => {
 		});
 	});
 
+	// --- getFileMetadata / NoteJson ---
+	describe("getFileMetadata / NoteJson", () => {
+		it("deduplicates tags appearing in both frontmatter and inline", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.metadataCache.getFileCache.mockReturnValue({
+				frontmatter: { tags: ["shared"] },
+				tags: [{ tag: "#shared" }],
+			});
+			app.vault.cachedRead.mockResolvedValue("content");
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: { accept: "application/vnd.olrapi.note+json" },
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			const body = JSON.parse(res._body);
+			expect(body.tags).toEqual(["shared"]);
+		});
+
+		it("strips # prefix from inline tags", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.metadataCache.getFileCache.mockReturnValue({
+				frontmatter: {},
+				tags: [{ tag: "#inlineTag" }, { tag: "#another" }],
+			});
+			app.vault.cachedRead.mockResolvedValue("content");
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: { accept: "application/vnd.olrapi.note+json" },
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			const body = JSON.parse(res._body);
+			expect(body.tags).toEqual(["inlineTag", "another"]);
+		});
+
+		it("returns empty tags array when no tags exist", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.metadataCache.getFileCache.mockReturnValue({
+				frontmatter: {},
+			});
+			app.vault.cachedRead.mockResolvedValue("content");
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: { accept: "application/vnd.olrapi.note+json" },
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			const body = JSON.parse(res._body);
+			expect(body.tags).toEqual([]);
+		});
+
+		it("strips position from frontmatter", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.metadataCache.getFileCache.mockReturnValue({
+				frontmatter: {
+					title: "Test",
+					position: { start: { line: 0 }, end: { line: 3 } },
+				},
+			});
+			app.vault.cachedRead.mockResolvedValue("content");
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: { accept: "application/vnd.olrapi.note+json" },
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			const body = JSON.parse(res._body);
+			expect(body.frontmatter.title).toBe("Test");
+			expect(body.frontmatter.position).toBeUndefined();
+		});
+
+		it("handles frontmatter.tags as non-array (single string tag)", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.metadataCache.getFileCache.mockReturnValue({
+				frontmatter: { tags: "solo-tag" },
+			});
+			app.vault.cachedRead.mockResolvedValue("content");
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: { accept: "application/vnd.olrapi.note+json" },
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			const body = JSON.parse(res._body);
+			expect(body.tags).toEqual(["solo-tag"]);
+		});
+	});
+
 	// --- Move ---
 	describe("handleMove", () => {
 		it("renames file and returns new path", async () => {

@@ -150,7 +150,7 @@ paths:
     put:
       tags:
         - "Note"
-      summary: "Create or overwrite a note by wiki-link name"
+      summary: "Overwrite a note by wiki-link name"
       description: |
         Overwrites the content of an existing note resolved by wiki-link name.
         Accepts `text/markdown` or binary content.
@@ -236,6 +236,7 @@ paths:
       parameters:
         - name: "Operation"
           in: "header"
+          required: true
           description: "The patch operation."
           schema:
             type: "string"
@@ -245,6 +246,7 @@ paths:
               - "replace"
         - name: "Target-Type"
           in: "header"
+          required: true
           description: "Type of target to patch."
           schema:
             type: "string"
