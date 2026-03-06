@@ -1,0 +1,379 @@
+openapi: "3.0.2"
+info:
+  title: "Local REST API — Note Extension"
+  version: "1.0.0"
+  description: |
+    Adds wiki-link name resolution endpoints to Local REST API for Obsidian.
+
+    These endpoints resolve notes by wiki-link name (e.g. "My Note" or "Projects/TODO")
+    via Obsidian's metadata cache, including frontmatter aliases.
+
+    **Authentication** is handled by the parent Local REST API plugin — use the same
+    API key via `Authorization: Bearer <key>`.
+
+    **Resolution order:**
+    1. `getFirstLinkpathDest(name, "/")` — matches path and basename
+    2. Alias cache — matches frontmatter `aliases` / `alias` fields (case-insensitive)
+
+    If no match is found, 404 responses include up to 5 fuzzy suggestions.
+components:
+  schemas:
+    NoteNotFoundError:
+      type: "object"
+      properties:
+        message:
+          type: "string"
+          description: "Error message."
+          example: "No note was found matching the specified wiki-link name."
+        errorCode:
+          type: "number"
+          description: "Error code."
+          example: 40462
+        suggestions:
+          type: "array"
+          description: "Similar note names (basenames and aliases) ranked by fuzzy match score. Up to 5 results."
+          items:
+            type: "string"
+          example:
+            - "Vault MOC"
+            - "Vault Setup"
+            - "Vault Backup"
+    NoteJson:
+      type: "object"
+      required:
+        - "tags"
+        - "frontmatter"
+        - "stat"
+        - "path"
+        - "content"
+      properties:
+        tags:
+          type: "array"
+          description: "Merged inline and frontmatter tags, without leading `#`, deduplicated."
+          items:
+            type: "string"
+        frontmatter:
+          type: "object"
+          description: "Parsed YAML frontmatter (position metadata stripped)."
+        stat:
+          type: "object"
+          properties:
+            ctime:
+              type: "number"
+            mtime:
+              type: "number"
+            size:
+              type: "number"
+          required:
+            - "ctime"
+            - "mtime"
+            - "size"
+        path:
+          type: "string"
+          description: "Full vault path of the resolved file."
+        content:
+          type: "string"
+          description: "Full file content."
+    MoveRequest:
+      type: "object"
+      required:
+        - "from"
+        - "to"
+      properties:
+        from:
+          type: "string"
+          description: "Wiki-link name of the note to move (resolved via metadata cache and aliases)."
+          example: "Old Note Name"
+        to:
+          type: "string"
+          description: "New vault path. A `.md` extension is added if not present."
+          example: "4-Archive/Old Note Name.md"
+    MoveResponse:
+      type: "object"
+      properties:
+        from:
+          type: "string"
+          description: "Original vault path of the file."
+          example: "1-Projects/Old Note Name.md"
+        to:
+          type: "string"
+          description: "New vault path after move."
+          example: "4-Archive/Old Note Name.md"
+  securitySchemes:
+    apiKeyAuth:
+      type: "http"
+      scheme: "bearer"
+      description: "Use the API key from Local REST API plugin settings."
+security:
+  - apiKeyAuth: []
+paths:
+  /note/{noteName}:
+    parameters:
+      - name: "noteName"
+        in: "path"
+        required: true
+        description: |
+          Wiki-link style name of the note (e.g. "My Note" or "Projects/My Note").
+          Resolved via Obsidian's metadata cache; also matches frontmatter aliases (case-insensitive).
+        schema:
+          type: "string"
+    get:
+      tags:
+        - "Note"
+      summary: "Read a note by wiki-link name"
+      description: |
+        Returns the content of a note resolved by wiki-link name.
+
+        Use `Accept: application/vnd.olrapi.note+json` to get structured metadata
+        (tags, frontmatter, stat, path, content) instead of raw file content.
+      responses:
+        "200":
+          description: "Success"
+          headers:
+            Content-Location:
+              description: "Vault path of the resolved file (URL-encoded)."
+              schema:
+                type: "string"
+          content:
+            text/markdown:
+              schema:
+                type: "string"
+            application/vnd.olrapi.note+json:
+              schema:
+                $ref: "#/components/schemas/NoteJson"
+        "404":
+          description: "Note not found"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NoteNotFoundError"
+    put:
+      tags:
+        - "Note"
+      summary: "Overwrite a note by wiki-link name"
+      description: |
+        Overwrites the content of an existing note resolved by wiki-link name.
+        Accepts `text/markdown` or binary content.
+      requestBody:
+        content:
+          text/markdown:
+            schema:
+              type: "string"
+          "*/*":
+            schema:
+              type: "string"
+              format: "binary"
+      responses:
+        "204":
+          description: "Success"
+          headers:
+            Content-Location:
+              description: "Vault path of the resolved file (URL-encoded)."
+              schema:
+                type: "string"
+        "400":
+          description: "Invalid request body"
+          content:
+            application/json:
+              schema:
+                type: "object"
+                properties:
+                  message:
+                    type: "string"
+                  errorCode:
+                    type: "number"
+        "404":
+          description: "Note not found"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NoteNotFoundError"
+    post:
+      tags:
+        - "Note"
+      summary: "Append content to a note by wiki-link name"
+      description: |
+        Appends text content to an existing note. A newline is inserted before
+        the appended content if the file doesn't already end with one.
+      requestBody:
+        required: true
+        content:
+          text/markdown:
+            schema:
+              type: "string"
+      responses:
+        "204":
+          description: "Success"
+          headers:
+            Content-Location:
+              description: "Vault path of the resolved file (URL-encoded)."
+              schema:
+                type: "string"
+        "400":
+          description: "Request body must be text"
+          content:
+            application/json:
+              schema:
+                type: "object"
+                properties:
+                  message:
+                    type: "string"
+                  errorCode:
+                    type: "number"
+        "404":
+          description: "Note not found"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NoteNotFoundError"
+    patch:
+      tags:
+        - "Note"
+      summary: "Patch a note by wiki-link name"
+      description: |
+        Applies a structured patch to a note using `Target-Type`, `Operation`, and `Target` headers.
+        Supports append/prepend/replace on headings, blocks, and frontmatter fields.
+      parameters:
+        - name: "Operation"
+          in: "header"
+          required: true
+          description: "The patch operation."
+          schema:
+            type: "string"
+            enum:
+              - "append"
+              - "prepend"
+              - "replace"
+        - name: "Target-Type"
+          in: "header"
+          required: true
+          description: "Type of target to patch."
+          schema:
+            type: "string"
+            enum:
+              - "heading"
+              - "block"
+              - "frontmatter"
+        - name: "Target"
+          in: "header"
+          description: "The target identifier (heading path, block ID, or frontmatter key). URL-encoded."
+          schema:
+            type: "string"
+        - name: "Target-Delimiter"
+          in: "header"
+          description: "Delimiter for nested heading paths. Default: `::`"
+          schema:
+            type: "string"
+            default: "::"
+        - name: "Trim-Target-Whitespace"
+          in: "header"
+          description: "If `true`, trim whitespace around the target content."
+          schema:
+            type: "string"
+        - name: "Create-Target-If-Missing"
+          in: "header"
+          description: "If `true`, create the target (heading/block/frontmatter key) if it doesn't exist."
+          schema:
+            type: "string"
+        - name: "Apply-If-Content-Preexists"
+          in: "header"
+          description: "If `true`, apply the patch even if the content already exists at the target."
+          schema:
+            type: "string"
+      requestBody:
+        required: true
+        content:
+          text/markdown:
+            schema:
+              type: "string"
+          application/json:
+            schema:
+              type: "object"
+      responses:
+        "200":
+          description: "Success — returns the full patched file content."
+          headers:
+            Content-Location:
+              description: "Vault path of the resolved file (URL-encoded)."
+              schema:
+                type: "string"
+          content:
+            text/markdown:
+              schema:
+                type: "string"
+        "400":
+          description: "Invalid patch parameters or patch failed"
+          content:
+            application/json:
+              schema:
+                type: "object"
+                properties:
+                  message:
+                    type: "string"
+                  errorCode:
+                    type: "number"
+        "404":
+          description: "Note not found"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NoteNotFoundError"
+    delete:
+      tags:
+        - "Note"
+      summary: "Delete a note by wiki-link name"
+      description: |
+        Deletes a note resolved by wiki-link name.
+      responses:
+        "204":
+          description: "Success"
+          headers:
+            Content-Location:
+              description: "Vault path of the deleted file (URL-encoded)."
+              schema:
+                type: "string"
+        "404":
+          description: "Note not found"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NoteNotFoundError"
+  /note-move/:
+    post:
+      tags:
+        - "Note"
+      summary: "Move or rename a note"
+      description: |
+        Moves or renames a note, updating all backlinks via Obsidian's `fileManager.renameFile()`.
+        The `from` field is resolved via wiki-link name (including aliases).
+        A `.md` extension is added to `to` if not present.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MoveRequest"
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MoveResponse"
+        "400":
+          description: "Missing from/to fields"
+          content:
+            application/json:
+              schema:
+                type: "object"
+                properties:
+                  message:
+                    type: "string"
+                  errorCode:
+                    type: "number"
+        "404":
+          description: "Source note not found"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NoteNotFoundError"

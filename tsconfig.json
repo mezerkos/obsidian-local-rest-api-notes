@@ -20,5 +20,11 @@
   },
   "include": [
     "**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "mocks",
+    "tests",
+    "vitest.config.ts"
   ]
 }

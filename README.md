@@ -1,12 +1,26 @@
-# Obsidian Local REST API Sample Plugin
+# Obsidian Local REST API — Notes Extension
 
-This plugin provides an example of how you might add additional plugins to
-Obsidian Local REST API.
+Extension plugin for [Obsidian Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api) that adds wiki-link name resolution endpoints. Notes are resolved by their wiki-link name (including frontmatter aliases), not by vault path.
 
-## Instructions
+## Installation
 
-1. Fork this repository.
-2. Update `main.ts` to advertise your new route(s).
-3. Build the project with `npm run build` (or `npm run dev` if you are iterating on some changes).
-4. Link the plugin into your Obsidian vault's `.obsidian/plugins` directory.  On linux or osx, you can run `ln -s /path/to/your/cloned/fork /path/to/your/vault/.obsidian/plugins`.
-5. Enable the plugin in Obsidian's Community Plugins settings page.
+```bash
+npm install
+npm run build
+```
+
+Copy or symlink `main.js` and `manifest.json` into your vault's `.obsidian/plugins/obsidian-local-rest-api-notes/` directory, then enable the plugin in Obsidian's Community Plugins settings. The parent [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api) plugin must be installed and enabled.
+
+## Routes
+
+| Route | Methods | Description |
+|-------|---------|-------------|
+| `/note/*` | GET, PUT, POST, PATCH, DELETE | Read, overwrite, append, patch, or delete a note by wiki-link name |
+| `/note-move/` | POST | Move/rename a note (updates backlinks) |
+| `/note-api.yaml` | GET | OpenAPI spec for these endpoints |
+
+The full OpenAPI specification is served at `/note-api.yaml` when the plugin is running.
+
+## License
+
+[MIT](LICENSE)

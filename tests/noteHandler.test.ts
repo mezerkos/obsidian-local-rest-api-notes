@@ -1,0 +1,516 @@
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { NoteHandler } from "../main";
+import { TFile, createMockApp } from "../mocks/obsidian";
+import { createMockReq, createMockRes } from "../mocks/express";
+
+describe("NoteHandler", () => {
+	let app: ReturnType<typeof createMockApp>;
+	let handler: NoteHandler;
+
+	beforeEach(() => {
+		app = createMockApp();
+		// Provide empty markdown files list for AliasCache initial build
+		app.vault.getMarkdownFiles.mockReturnValue([]);
+		handler = new NoteHandler(app as any);
+	});
+
+	// --- extractName ---
+	describe("extractName (via handler methods)", () => {
+		it("extracts simple note name from path", async () => {
+			const req = createMockReq({ path: "/note/MyNote" });
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+			// It should try to resolve "MyNote"
+			expect(app.metadataCache.getFirstLinkpathDest).toHaveBeenCalledWith(
+				"MyNote",
+				"/"
+			);
+		});
+
+		it("decodes URL-encoded names", async () => {
+			const req = createMockReq({ path: "/note/My%20Note" });
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+			expect(app.metadataCache.getFirstLinkpathDest).toHaveBeenCalledWith(
+				"My Note",
+				"/"
+			);
+		});
+
+		it("handles nested paths", async () => {
+			const req = createMockReq({
+				path: "/note/Projects/My%20Note",
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+			expect(app.metadataCache.getFirstLinkpathDest).toHaveBeenCalledWith(
+				"Projects/My Note",
+				"/"
+			);
+		});
+	});
+
+	// --- resolveNote ---
+	describe("resolveNote (via handler methods)", () => {
+		it("resolves via direct link path first", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+
+			const req = createMockReq({ path: "/note/Test" });
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			expect(res.statusCode).not.toBe(404);
+		});
+
+		it("falls back to alias cache", async () => {
+			const file = new TFile("notes/Real Name.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(null);
+
+			// Set up alias cache
+			app.vault.getMarkdownFiles.mockReturnValue([file]);
+			app.metadataCache.getFileCache.mockReturnValue({
+				frontmatter: { aliases: ["Alias"] },
+			});
+
+			// Re-create handler to pick up new files
+			handler = new NoteHandler(app as any);
+
+			const req = createMockReq({ path: "/note/Alias" });
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			expect(res.statusCode).not.toBe(404);
+		});
+
+		it("returns 404 when no match", async () => {
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(null);
+
+			const req = createMockReq({ path: "/note/NonExistent" });
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(404);
+			expect(res._jsonBody.errorCode).toBe(40462);
+		});
+	});
+
+	// --- findSimilarNotes ---
+	describe("404 suggestions", () => {
+		it("includes suggestions in 404 response", async () => {
+			const files = [
+				new TFile("notes/Apple.md"),
+				new TFile("notes/Application.md"),
+			];
+			app.vault.getMarkdownFiles.mockReturnValue(files);
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(null);
+			app.metadataCache.getFileCache.mockReturnValue(null);
+
+			// Re-create to pick up files
+			handler = new NoteHandler(app as any);
+
+			const req = createMockReq({ path: "/note/App" });
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(404);
+			expect(res._jsonBody.suggestions).toBeDefined();
+			expect(res._jsonBody.suggestions.length).toBeGreaterThan(0);
+		});
+
+		it("limits suggestions to 5", async () => {
+			const files = Array.from({ length: 10 }, (_, i) =>
+				new TFile(`notes/Note${i}.md`)
+			);
+			app.vault.getMarkdownFiles.mockReturnValue(files);
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(null);
+			app.metadataCache.getFileCache.mockReturnValue(null);
+
+			handler = new NoteHandler(app as any);
+
+			const req = createMockReq({ path: "/note/Note" });
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			expect(res._jsonBody.suggestions.length).toBeLessThanOrEqual(5);
+		});
+	});
+
+	// --- GET ---
+	describe("handleGet", () => {
+		it("returns raw markdown by default", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.vault.adapter.readBinary.mockResolvedValue(
+				new TextEncoder().encode("# Hello").buffer
+			);
+
+			const req = createMockReq({ path: "/note/Test" });
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			expect(res.set).toHaveBeenCalledWith(
+				"Content-Location",
+				"notes/Test.md"
+			);
+			expect(res.send).toHaveBeenCalled();
+		});
+
+		it("returns NoteJson when Accept header is set", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.metadataCache.getFileCache.mockReturnValue({
+				frontmatter: { title: "Test" },
+				tags: [{ tag: "#foo" }],
+			});
+			app.vault.cachedRead.mockResolvedValue("content");
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: {
+					accept: "application/vnd.olrapi.note+json",
+				},
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			expect(res.setHeader).toHaveBeenCalledWith(
+				"Content-Type",
+				"application/vnd.olrapi.note+json"
+			);
+			const body = JSON.parse(res._body);
+			expect(body.path).toBe("notes/Test.md");
+			expect(body.tags).toContain("foo");
+		});
+
+		it("sets Content-Location header", async () => {
+			const file = new TFile("some/path/Note.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.vault.adapter.readBinary.mockResolvedValue(new ArrayBuffer(0));
+
+			const req = createMockReq({ path: "/note/Note" });
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			expect(res.set).toHaveBeenCalledWith(
+				"Content-Location",
+				"some/path/Note.md"
+			);
+		});
+	});
+
+	// --- PUT ---
+	describe("handlePut", () => {
+		it("writes string body", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+
+			const req = createMockReq({
+				path: "/note/Test",
+				body: "new content",
+			});
+			const res = createMockRes();
+			await handler.handlePut(req, res);
+
+			expect(app.vault.adapter.write).toHaveBeenCalledWith(
+				"notes/Test.md",
+				"new content"
+			);
+			expect(res.status).toHaveBeenCalledWith(204);
+		});
+
+		it("writes binary body", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+
+			const buf = Buffer.from("binary data");
+			const req = createMockReq({
+				path: "/note/Test",
+				body: buf,
+			});
+			const res = createMockRes();
+			await handler.handlePut(req, res);
+
+			expect(app.vault.adapter.writeBinary).toHaveBeenCalled();
+			expect(res.status).toHaveBeenCalledWith(204);
+		});
+
+		it("returns 400 for invalid body type", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+
+			const req = createMockReq({
+				path: "/note/Test",
+				body: { invalid: true },
+			});
+			const res = createMockRes();
+			await handler.handlePut(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(400);
+			expect(res._jsonBody.errorCode).toBe(40010);
+		});
+
+		it("returns 404 for unknown note", async () => {
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(null);
+
+			const req = createMockReq({ path: "/note/Missing" });
+			const res = createMockRes();
+			await handler.handlePut(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(404);
+		});
+	});
+
+	// --- POST ---
+	describe("handlePost", () => {
+		it("appends with newline when file doesn't end with one", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.vault.read.mockResolvedValue("existing content");
+
+			const req = createMockReq({
+				path: "/note/Test",
+				body: "appended",
+			});
+			const res = createMockRes();
+			await handler.handlePost(req, res);
+
+			expect(app.vault.adapter.write).toHaveBeenCalledWith(
+				"notes/Test.md",
+				"existing content\nappended"
+			);
+			expect(res.status).toHaveBeenCalledWith(204);
+		});
+
+		it("appends without extra newline when file ends with one", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.vault.read.mockResolvedValue("existing\n");
+
+			const req = createMockReq({
+				path: "/note/Test",
+				body: "appended",
+			});
+			const res = createMockRes();
+			await handler.handlePost(req, res);
+
+			expect(app.vault.adapter.write).toHaveBeenCalledWith(
+				"notes/Test.md",
+				"existing\nappended"
+			);
+		});
+
+		it("returns 400 for non-string body", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+
+			const req = createMockReq({
+				path: "/note/Test",
+				body: { object: true },
+			});
+			const res = createMockRes();
+			await handler.handlePost(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(400);
+			expect(res._jsonBody.errorCode).toBe(40010);
+		});
+	});
+
+	// --- DELETE ---
+	describe("handleDelete", () => {
+		it("removes the file and returns 204", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+
+			const req = createMockReq({ path: "/note/Test" });
+			const res = createMockRes();
+			await handler.handleDelete(req, res);
+
+			expect(app.vault.adapter.remove).toHaveBeenCalledWith(
+				"notes/Test.md"
+			);
+			expect(res.status).toHaveBeenCalledWith(204);
+		});
+
+		it("returns 404 for unknown note", async () => {
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(null);
+
+			const req = createMockReq({ path: "/note/Missing" });
+			const res = createMockRes();
+			await handler.handleDelete(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(404);
+		});
+	});
+
+	// --- getFileMetadata / NoteJson ---
+	describe("getFileMetadata / NoteJson", () => {
+		it("deduplicates tags appearing in both frontmatter and inline", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.metadataCache.getFileCache.mockReturnValue({
+				frontmatter: { tags: ["shared"] },
+				tags: [{ tag: "#shared" }],
+			});
+			app.vault.cachedRead.mockResolvedValue("content");
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: { accept: "application/vnd.olrapi.note+json" },
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			const body = JSON.parse(res._body);
+			expect(body.tags).toEqual(["shared"]);
+		});
+
+		it("strips # prefix from inline tags", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.metadataCache.getFileCache.mockReturnValue({
+				frontmatter: {},
+				tags: [{ tag: "#inlineTag" }, { tag: "#another" }],
+			});
+			app.vault.cachedRead.mockResolvedValue("content");
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: { accept: "application/vnd.olrapi.note+json" },
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			const body = JSON.parse(res._body);
+			expect(body.tags).toEqual(["inlineTag", "another"]);
+		});
+
+		it("returns empty tags array when no tags exist", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.metadataCache.getFileCache.mockReturnValue({
+				frontmatter: {},
+			});
+			app.vault.cachedRead.mockResolvedValue("content");
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: { accept: "application/vnd.olrapi.note+json" },
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			const body = JSON.parse(res._body);
+			expect(body.tags).toEqual([]);
+		});
+
+		it("strips position from frontmatter", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.metadataCache.getFileCache.mockReturnValue({
+				frontmatter: {
+					title: "Test",
+					position: { start: { line: 0 }, end: { line: 3 } },
+				},
+			});
+			app.vault.cachedRead.mockResolvedValue("content");
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: { accept: "application/vnd.olrapi.note+json" },
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			const body = JSON.parse(res._body);
+			expect(body.frontmatter.title).toBe("Test");
+			expect(body.frontmatter.position).toBeUndefined();
+		});
+
+		it("handles frontmatter.tags as non-array (single string tag)", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.metadataCache.getFileCache.mockReturnValue({
+				frontmatter: { tags: "solo-tag" },
+			});
+			app.vault.cachedRead.mockResolvedValue("content");
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: { accept: "application/vnd.olrapi.note+json" },
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			const body = JSON.parse(res._body);
+			expect(body.tags).toEqual(["solo-tag"]);
+		});
+	});
+
+	// --- Move ---
+	describe("handleMove", () => {
+		it("renames file and returns new path", async () => {
+			const file = new TFile("old/path.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+
+			const req = createMockReq({
+				path: "/note-move/",
+				body: { from: "OldNote", to: "new/path.md" },
+			});
+			const res = createMockRes();
+			await handler.handleMove(req, res);
+
+			expect(app.fileManager.renameFile).toHaveBeenCalledWith(
+				file,
+				"new/path.md"
+			);
+			expect(res.status).toHaveBeenCalledWith(200);
+			expect(res._jsonBody).toEqual({
+				from: "old/path.md",
+				to: "new/path.md",
+			});
+		});
+
+		it("appends .md extension if missing", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+
+			const req = createMockReq({
+				path: "/note-move/",
+				body: { from: "Test", to: "archive/Test" },
+			});
+			const res = createMockRes();
+			await handler.handleMove(req, res);
+
+			expect(app.fileManager.renameFile).toHaveBeenCalledWith(
+				file,
+				"archive/Test.md"
+			);
+		});
+
+		it("returns 400 when from/to are missing", async () => {
+			const req = createMockReq({
+				path: "/note-move/",
+				body: { from: "Test" },
+			});
+			const res = createMockRes();
+			await handler.handleMove(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(400);
+			expect(res._jsonBody.errorCode).toBe(40020);
+		});
+
+		it("returns 404 when source not found", async () => {
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(null);
+
+			const req = createMockReq({
+				path: "/note-move/",
+				body: { from: "Missing", to: "dest" },
+			});
+			const res = createMockRes();
+			await handler.handleMove(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(404);
+		});
+	});
+});
