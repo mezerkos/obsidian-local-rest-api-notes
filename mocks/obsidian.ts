@@ -64,7 +64,9 @@ export function createMockApp() {
 				write: vi.fn(async () => {}),
 				writeBinary: vi.fn(async () => {}),
 				remove: vi.fn(async () => {}),
+				exists: vi.fn(async () => true),
 			},
+			createFolder: vi.fn(async () => {}),
 			on: vi.fn((event: string, cb: Function) => {
 				if (!vaultCallbacks[event]) vaultCallbacks[event] = [];
 				vaultCallbacks[event].push(cb);

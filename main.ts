@@ -474,6 +474,15 @@ class NoteHandler {
 			destPath += ".md";
 		}
 
+		// Ensure destination directory exists (Obsidian doesn't auto-create it)
+		const destDir = destPath.substring(0, destPath.lastIndexOf("/"));
+		if (destDir) {
+			const dirExists = await this.app.vault.adapter.exists(destDir);
+			if (!dirExists) {
+				await this.app.vault.createFolder(destDir);
+			}
+		}
+
 		await this.app.fileManager.renameFile(file, destPath);
 		res.status(200).json({ from: file.path, to: destPath });
 	}
