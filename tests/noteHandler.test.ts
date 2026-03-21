@@ -500,6 +500,58 @@ describe("NoteHandler", () => {
 			expect(res._jsonBody.errorCode).toBe(40020);
 		});
 
+		it("creates destination directory if it doesn't exist", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.vault.adapter.exists.mockResolvedValue(false);
+
+			const req = createMockReq({
+				path: "/note-move/",
+				body: { from: "Test", to: "new/nested/dir/Test.md" },
+			});
+			const res = createMockRes();
+			await handler.handleMove(req, res);
+
+			expect(app.vault.adapter.exists).toHaveBeenCalledWith("new/nested/dir");
+			expect(app.vault.createFolder).toHaveBeenCalledWith("new/nested/dir");
+			expect(app.fileManager.renameFile).toHaveBeenCalledWith(
+				file,
+				"new/nested/dir/Test.md"
+			);
+			expect(res.status).toHaveBeenCalledWith(200);
+		});
+
+		it("does not create directory if it already exists", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.vault.adapter.exists.mockResolvedValue(true);
+
+			const req = createMockReq({
+				path: "/note-move/",
+				body: { from: "Test", to: "existing/dir/Test.md" },
+			});
+			const res = createMockRes();
+			await handler.handleMove(req, res);
+
+			expect(app.vault.adapter.exists).toHaveBeenCalledWith("existing/dir");
+			expect(app.vault.createFolder).not.toHaveBeenCalled();
+		});
+
+		it("skips directory creation for root-level moves", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+
+			const req = createMockReq({
+				path: "/note-move/",
+				body: { from: "Test", to: "Test.md" },
+			});
+			const res = createMockRes();
+			await handler.handleMove(req, res);
+
+			expect(app.vault.adapter.exists).not.toHaveBeenCalled();
+			expect(app.vault.createFolder).not.toHaveBeenCalled();
+		});
+
 		it("returns 404 when source not found", async () => {
 			app.metadataCache.getFirstLinkpathDest.mockReturnValue(null);
 
