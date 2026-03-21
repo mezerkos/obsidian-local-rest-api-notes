@@ -15,6 +15,7 @@ declare module "obsidian-local-rest-api" {
 import {
 	applyPatch,
 	ContentType,
+	getDocumentMap,
 	PatchFailed,
 	PatchInstruction,
 	PatchOperation,
@@ -205,11 +206,44 @@ class NoteHandler {
 
 		res.set("Content-Location", encodeURI(file.path));
 
+		const targetType = req.get("Target-Type");
+
 		// Accept: application/vnd.olrapi.note+json → structured JSON
 		if (req.headers.accept === CONTENT_TYPE_NOTE_JSON) {
 			const metadata = await this.getFileMetadata(file);
+
+			if (targetType) {
+				const section = this.extractSection(
+					metadata.content as string, targetType, req
+				);
+				if (section === null) {
+					res.status(404).json({
+						message: `Target not found in note.`,
+						errorCode: 40463,
+					});
+					return;
+				}
+				metadata.content = section;
+			}
+
 			res.setHeader("Content-Type", CONTENT_TYPE_NOTE_JSON);
 			res.send(JSON.stringify(metadata, null, 2));
+			return;
+		}
+
+		// Read content (text for section extraction, binary otherwise)
+		if (targetType) {
+			const content = await this.app.vault.read(file);
+			const section = this.extractSection(content, targetType, req);
+			if (section === null) {
+				res.status(404).json({
+					message: `Target not found in note.`,
+					errorCode: 40463,
+				});
+				return;
+			}
+			res.set("Content-Type", CONTENT_TYPE_MARKDOWN + "; charset=utf-8");
+			res.send(section);
 			return;
 		}
 
@@ -223,6 +257,31 @@ class NoteHandler {
 				(mimeType === CONTENT_TYPE_MARKDOWN ? "; charset=utf-8" : ""),
 		});
 		res.send(Buffer.from(content));
+	}
+
+	private extractSection(
+		content: string,
+		targetType: string,
+		req: any
+	): string | null {
+		if (!["heading", "block"].includes(targetType)) {
+			return null;
+		}
+
+		const rawTarget = decodeURIComponent(req.get("Target") ?? "");
+		if (!rawTarget) return null;
+
+		const targetDelimiter = req.get("Target-Delimiter") || "::";
+		const key =
+			targetType === "heading"
+				? rawTarget.split(targetDelimiter).join("\u001f")
+				: rawTarget;
+
+		const map = getDocumentMap(content);
+		const entry = (map as any)[targetType]?.[key];
+		if (!entry) return null;
+
+		return content.slice(entry.content.start, entry.content.end);
 	}
 
 	// --- PUT /note/* ---
