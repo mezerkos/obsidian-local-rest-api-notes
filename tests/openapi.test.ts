@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import SwaggerParser from "@apidevtools/swagger-parser";
 import { resolve } from "path";
 
-const OPENAPI_PATH = resolve(__dirname, "../openapi.yaml");
+const OPENAPI_PATH = resolve(__dirname, "../notes-openapi.yaml");
 
 const V2_PARAM_NAMES = [
 	"Heading",

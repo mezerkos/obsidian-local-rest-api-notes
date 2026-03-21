@@ -16,6 +16,10 @@ info:
     2. Alias cache — matches frontmatter `aliases` / `alias` fields (case-insensitive)
 
     If no match is found, 404 responses include up to 5 fuzzy suggestions.
+
+    If a name matches multiple notes (ambiguous), a **300 Multiple Choices** response
+    is returned with the list of candidate vault paths. Re-request with a full vault
+    path (e.g. `1-Projects/TODO` instead of `TODO`) to disambiguate.
 components:
   schemas:
     NoteNotFoundError:
@@ -38,6 +42,25 @@ components:
             - "Vault MOC"
             - "Vault Setup"
             - "Vault Backup"
+    AmbiguousNoteError:
+      type: "object"
+      properties:
+        message:
+          type: "string"
+          description: "Error message."
+          example: "Multiple notes match the given name. Use a full vault path to disambiguate."
+        errorCode:
+          type: "number"
+          description: "Error code."
+          example: 30060
+        candidates:
+          type: "array"
+          description: "Full vault paths of all matching notes."
+          items:
+            type: "string"
+          example:
+            - "1-Projects/TODO.md"
+            - "4-Archive/TODO.md"
     NoteJson:
       type: "object"
       required:
@@ -167,6 +190,12 @@ paths:
             application/vnd.olrapi.note+json:
               schema:
                 $ref: "#/components/schemas/NoteJson"
+        "300":
+          description: "Ambiguous — multiple notes match"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AmbiguousNoteError"
         "404":
           description: "Note not found"
           content:
@@ -208,6 +237,12 @@ paths:
                     type: "string"
                   errorCode:
                     type: "number"
+        "300":
+          description: "Ambiguous — multiple notes match"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AmbiguousNoteError"
         "404":
           description: "Note not found"
           content:
@@ -246,6 +281,12 @@ paths:
                     type: "string"
                   errorCode:
                     type: "number"
+        "300":
+          description: "Ambiguous — multiple notes match"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AmbiguousNoteError"
         "404":
           description: "Note not found"
           content:
@@ -338,6 +379,12 @@ paths:
                     type: "string"
                   errorCode:
                     type: "number"
+        "300":
+          description: "Ambiguous — multiple notes match"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AmbiguousNoteError"
         "404":
           description: "Note not found"
           content:
@@ -358,6 +405,12 @@ paths:
               description: "Vault path of the deleted file (URL-encoded)."
               schema:
                 type: "string"
+        "300":
+          description: "Ambiguous — multiple notes match"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AmbiguousNoteError"
         "404":
           description: "Note not found"
           content:
@@ -398,6 +451,12 @@ paths:
                     type: "string"
                   errorCode:
                     type: "number"
+        "300":
+          description: "Ambiguous — multiple notes match source name"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AmbiguousNoteError"
         "404":
           description: "Source note not found"
           content:
