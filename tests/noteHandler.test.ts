@@ -199,6 +199,127 @@ describe("NoteHandler", () => {
 		});
 	});
 
+	// --- GET with Target-Type (section extraction) ---
+	describe("handleGet with Target-Type", () => {
+		const markdownContent = [
+			"# Intro",
+			"Some intro text.",
+			"# Details",
+			"Detail content here.",
+			"# Summary",
+			"Summary content.",
+		].join("\n");
+
+		it("returns heading section as markdown", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.vault.read.mockResolvedValue(markdownContent);
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: {
+					"Target-Type": "heading",
+					Target: "Details",
+				},
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			expect(res.send).toHaveBeenCalled();
+			const body = res._body;
+			expect(body).toContain("Detail content here.");
+			expect(body).not.toContain("Summary content.");
+		});
+
+		it("returns heading section in NoteJson mode", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.metadataCache.getFileCache.mockReturnValue({
+				frontmatter: {},
+			});
+			app.vault.cachedRead.mockResolvedValue(markdownContent);
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: {
+					accept: "application/vnd.olrapi.note+json",
+					"Target-Type": "heading",
+					Target: "Details",
+				},
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			const body = JSON.parse(res._body);
+			expect(body.content).toContain("Detail content here.");
+			expect(body.content).not.toContain("Summary content.");
+		});
+
+		it("returns nested heading via delimiter", async () => {
+			const nested = [
+				"# Parent",
+				"Parent text.",
+				"## Child",
+				"Child text.",
+			].join("\n");
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.vault.read.mockResolvedValue(nested);
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: {
+					"Target-Type": "heading",
+					Target: "Parent::Child",
+				},
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			const body = res._body;
+			expect(body).toContain("Child text.");
+		});
+
+		it("returns 404 when heading not found", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.vault.read.mockResolvedValue(markdownContent);
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: {
+					"Target-Type": "heading",
+					Target: "NonExistent",
+				},
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(404);
+			expect(res._jsonBody.errorCode).toBe(40463);
+		});
+
+		it("returns block section", async () => {
+			const blockContent = "A paragraph with a reference. ^myblock\n";
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.vault.read.mockResolvedValue(blockContent);
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: {
+					"Target-Type": "block",
+					Target: "myblock",
+				},
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			expect(res.send).toHaveBeenCalled();
+			expect(res._body).toContain("A paragraph with a reference.");
+		});
+	});
+
 	// --- PUT ---
 	describe("handlePut", () => {
 		it("writes string body", async () => {

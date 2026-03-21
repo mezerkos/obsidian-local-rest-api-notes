@@ -126,6 +126,32 @@ paths:
 
         Use `Accept: application/vnd.olrapi.note+json` to get structured metadata
         (tags, frontmatter, stat, path, content) instead of raw file content.
+
+        Optionally pass `Target-Type` and `Target` headers to extract only a
+        specific heading or block section from the note.
+      parameters:
+        - name: "Target-Type"
+          in: "header"
+          required: false
+          description: "Type of section to extract. When omitted, the full note is returned."
+          schema:
+            type: "string"
+            enum:
+              - "heading"
+              - "block"
+        - name: "Target"
+          in: "header"
+          required: false
+          description: "The target identifier (heading path or block ID). URL-encoded. Required when `Target-Type` is set."
+          schema:
+            type: "string"
+        - name: "Target-Delimiter"
+          in: "header"
+          required: false
+          description: "Delimiter for nested heading paths. Default: `::`"
+          schema:
+            type: "string"
+            default: "::"
       responses:
         "200":
           description: "Success"
