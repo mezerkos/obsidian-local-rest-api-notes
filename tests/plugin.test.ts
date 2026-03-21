@@ -48,14 +48,14 @@ describe("NoteApiExtensionPlugin", () => {
 	});
 
 	describe("registerRoutes", () => {
-		it("registers /note/*, /note-move/, and /note-api.yaml routes", () => {
+		it("registers /note/*, /note-move/, and /notes-openapi.yaml routes", () => {
 			plugin.registerRoutes();
 
 			const api = getPluginApi();
 			expect(api).toBeDefined();
 			expect(api.addRoute).toHaveBeenCalledWith("/note/*");
 			expect(api.addRoute).toHaveBeenCalledWith("/note-move/");
-			expect(api.addRoute).toHaveBeenCalledWith("/note-api.yaml");
+			expect(api.addRoute).toHaveBeenCalledWith("/notes-openapi.yaml");
 		});
 
 		it("registers all HTTP methods on /note/* route", () => {
@@ -87,14 +87,14 @@ describe("NoteApiExtensionPlugin", () => {
 		});
 	});
 
-	describe("/note-api.yaml route handler", () => {
+	describe("/notes-openapi.yaml route handler", () => {
 		it("serves yaml with correct content type", () => {
 			plugin.registerRoutes();
 
 			const api = getPluginApi();
 			const routeChain = api.addRoute.mock.results[0].value;
 
-			// .get() is called twice: first for /note/*, second for /note-api.yaml
+			// .get() is called twice: first for /note/*, second for /notes-openapi.yaml
 			const yamlHandler = routeChain.get.mock.calls[1][0];
 
 			const mockRes: any = {

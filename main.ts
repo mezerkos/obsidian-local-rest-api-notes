@@ -22,7 +22,7 @@ import {
 	PatchTargetType,
 } from "markdown-patch";
 import mime from "mime-types";
-import openapiYaml from "./openapi.yaml";
+import openapiYaml from "./notes-openapi.yaml";
 
 // --- Async handler wrapper (Express doesn't catch async rejections) ---
 
@@ -555,7 +555,7 @@ export default class NoteApiExtensionPlugin extends Plugin {
 			.post(asyncHandler(handler.handleMove.bind(handler)));
 
 		this.api
-			.addRoute("/note-api.yaml")
+			.addRoute("/notes-openapi.yaml")
 			.get((_req: any, res: any) => {
 				res.set("Content-Type", "text/yaml; charset=utf-8");
 				res.send(openapiYaml);
