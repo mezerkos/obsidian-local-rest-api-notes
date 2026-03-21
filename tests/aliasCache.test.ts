@@ -122,4 +122,38 @@ describe("AliasCache", () => {
 		expect(keys).toContain("bbb");
 		expect(keys).toContain("ccc");
 	});
+
+	it("resolveAll returns all files sharing an alias", () => {
+		const file1 = new TFile("a.md");
+		const file2 = new TFile("b.md");
+		app.vault.getMarkdownFiles.mockReturnValue([file1, file2]);
+		app.metadataCache.getFileCache.mockImplementation((f: TFile) => {
+			if (f.path === "a.md")
+				return { frontmatter: { aliases: ["Shared"] } };
+			if (f.path === "b.md")
+				return { frontmatter: { aliases: ["Shared"] } };
+			return null;
+		});
+
+		const all = cache.resolveAll("shared");
+		expect(all).toHaveLength(2);
+		expect(all).toContain(file1);
+		expect(all).toContain(file2);
+	});
+
+	it("resolveAll returns empty array for unknown alias", () => {
+		app.vault.getMarkdownFiles.mockReturnValue([]);
+		expect(cache.resolveAll("missing")).toEqual([]);
+	});
+
+	it("resolve returns first match when alias is shared", () => {
+		const file1 = new TFile("a.md");
+		const file2 = new TFile("b.md");
+		app.vault.getMarkdownFiles.mockReturnValue([file1, file2]);
+		app.metadataCache.getFileCache.mockReturnValue({
+			frontmatter: { aliases: ["Shared"] },
+		});
+
+		expect(cache.resolve("shared")).toBe(file1);
+	});
 });

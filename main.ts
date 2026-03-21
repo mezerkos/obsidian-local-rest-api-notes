@@ -49,7 +49,7 @@ const CONTENT_TYPE_NOTE_JSON = "application/vnd.olrapi.note+json";
 // --- Alias Cache ---
 
 class AliasCache {
-	private cache: Map<string, TFile> = new Map();
+	private cache: Map<string, TFile[]> = new Map();
 	private built = false;
 	private app: Plugin["app"];
 
@@ -87,7 +87,10 @@ class AliasCache {
 		const aliases = parseFrontMatterAliases(cache?.frontmatter ?? null);
 		if (aliases) {
 			for (const alias of aliases) {
-				this.cache.set(alias.toLowerCase(), file);
+				const key = alias.toLowerCase();
+				const existing = this.cache.get(key) ?? [];
+				existing.push(file);
+				this.cache.set(key, existing);
 			}
 		}
 	}
@@ -97,19 +100,28 @@ class AliasCache {
 	}
 
 	private removeByPath(path: string): void {
-		for (const [key, cachedFile] of this.cache) {
-			if (cachedFile.path === path) {
+		for (const [key, files] of this.cache) {
+			const filtered = files.filter((f) => f.path !== path);
+			if (filtered.length === 0) {
 				this.cache.delete(key);
+			} else {
+				this.cache.set(key, filtered);
 			}
 		}
 	}
 
 	resolve(name: string): TFile | null {
 		if (!this.built) this.build();
-		return this.cache.get(name.toLowerCase()) ?? null;
+		const files = this.cache.get(name.toLowerCase());
+		return files?.[0] ?? null;
 	}
 
-	entries(): IterableIterator<[string, TFile]> {
+	resolveAll(name: string): TFile[] {
+		if (!this.built) this.build();
+		return this.cache.get(name.toLowerCase()) ?? [];
+	}
+
+	entries(): IterableIterator<[string, TFile[]]> {
 		if (!this.built) this.build();
 		return this.cache.entries();
 	}
@@ -130,6 +142,48 @@ class NoteHandler {
 		const direct = this.app.metadataCache.getFirstLinkpathDest(name, "/");
 		if (direct) return direct;
 		return this.aliases.resolve(name);
+	}
+
+	private findAllMatches(name: string): TFile[] {
+		const seen = new Set<string>();
+		const matches: TFile[] = [];
+		const add = (file: TFile) => {
+			if (!seen.has(file.path)) {
+				seen.add(file.path);
+				matches.push(file);
+			}
+		};
+
+		const nameLower = name.toLowerCase();
+		const suffix = "/" + nameLower;
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			const pathNoExt = file.path.replace(/\.md$/i, "").toLowerCase();
+			if (pathNoExt === nameLower || pathNoExt.endsWith(suffix)) {
+				add(file);
+			}
+		}
+
+		for (const file of this.aliases.resolveAll(name)) {
+			add(file);
+		}
+
+		return matches;
+	}
+
+	private resolveNoteOrRespond(name: string, res: any): TFile | null {
+		const file = this.resolveNote(name);
+		if (!file) {
+			this.sendNotFound(res, name);
+			return null;
+		}
+
+		const allMatches = this.findAllMatches(name);
+		if (allMatches.length > 1) {
+			this.sendAmbiguous(res, name, allMatches);
+			return null;
+		}
+
+		return file;
 	}
 
 	private findSimilarNotes(name: string, limit = 5): string[] {
@@ -158,6 +212,15 @@ class NoteHandler {
 		};
 		if (suggestions.length > 0) body.suggestions = suggestions;
 		res.status(404).json(body);
+	}
+
+	private sendAmbiguous(res: any, name: string, matches: TFile[]): void {
+		res.status(300).json({
+			message:
+				"Multiple notes match the given name. Use a full vault path to disambiguate.",
+			errorCode: 30060,
+			candidates: matches.map((f) => f.path),
+		});
 	}
 
 	private extractName(req: any): string {
@@ -198,11 +261,8 @@ class NoteHandler {
 	// --- GET /note/* ---
 	async handleGet(req: any, res: any): Promise<void> {
 		const name = this.extractName(req);
-		const file = this.resolveNote(name);
-		if (!file) {
-			this.sendNotFound(res, name);
-			return;
-		}
+		const file = this.resolveNoteOrRespond(name, res);
+		if (!file) return;
 
 		res.set("Content-Location", encodeURI(file.path));
 
@@ -287,11 +347,8 @@ class NoteHandler {
 	// --- PUT /note/* ---
 	async handlePut(req: any, res: any): Promise<void> {
 		const name = this.extractName(req);
-		const file = this.resolveNote(name);
-		if (!file) {
-			this.sendNotFound(res, name);
-			return;
-		}
+		const file = this.resolveNoteOrRespond(name, res);
+		if (!file) return;
 
 		res.set("Content-Location", encodeURI(file.path));
 
@@ -317,11 +374,8 @@ class NoteHandler {
 	// --- POST /note/* (append) ---
 	async handlePost(req: any, res: any): Promise<void> {
 		const name = this.extractName(req);
-		const file = this.resolveNote(name);
-		if (!file) {
-			this.sendNotFound(res, name);
-			return;
-		}
+		const file = this.resolveNoteOrRespond(name, res);
+		if (!file) return;
 
 		res.set("Content-Location", encodeURI(file.path));
 
@@ -346,11 +400,8 @@ class NoteHandler {
 	// --- PATCH /note/* ---
 	async handlePatch(req: any, res: any): Promise<void> {
 		const name = this.extractName(req);
-		const file = this.resolveNote(name);
-		if (!file) {
-			this.sendNotFound(res, name);
-			return;
-		}
+		const file = this.resolveNoteOrRespond(name, res);
+		if (!file) return;
 
 		res.set("Content-Location", encodeURI(file.path));
 
@@ -438,11 +489,8 @@ class NoteHandler {
 	// --- DELETE /note/* ---
 	async handleDelete(req: any, res: any): Promise<void> {
 		const name = this.extractName(req);
-		const file = this.resolveNote(name);
-		if (!file) {
-			this.sendNotFound(res, name);
-			return;
-		}
+		const file = this.resolveNoteOrRespond(name, res);
+		if (!file) return;
 
 		res.set("Content-Location", encodeURI(file.path));
 		await this.app.vault.adapter.remove(file.path);
@@ -463,11 +511,8 @@ class NoteHandler {
 			return;
 		}
 
-		const file = this.resolveNote(from);
-		if (!file) {
-			this.sendNotFound(res, from);
-			return;
-		}
+		const file = this.resolveNoteOrRespond(from, res);
+		if (!file) return;
 
 		let destPath: string = to;
 		if (!destPath.endsWith(".md")) {
