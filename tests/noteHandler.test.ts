@@ -136,6 +136,139 @@ describe("NoteHandler", () => {
 		});
 	});
 
+	// --- Ambiguity ---
+	describe("ambiguous note resolution", () => {
+		it("returns 300 when basename matches multiple files", async () => {
+			const file1 = new TFile("1-Projects/TODO.md");
+			const file2 = new TFile("4-Archive/TODO.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file1);
+			app.vault.getMarkdownFiles.mockReturnValue([file1, file2]);
+			app.metadataCache.getFileCache.mockReturnValue(null);
+
+			handler = new NoteHandler(app as any);
+
+			const req = createMockReq({ path: "/note/TODO" });
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(300);
+			expect(res._jsonBody.errorCode).toBe(30060);
+			expect(res._jsonBody.candidates).toEqual([
+				"1-Projects/TODO.md",
+				"4-Archive/TODO.md",
+			]);
+		});
+
+		it("returns 300 when subpath matches multiple files", async () => {
+			const file1 = new TFile("1-Projects/Sub/Note.md");
+			const file2 = new TFile("2-Areas/Sub/Note.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file1);
+			app.vault.getMarkdownFiles.mockReturnValue([file1, file2]);
+			app.metadataCache.getFileCache.mockReturnValue(null);
+
+			handler = new NoteHandler(app as any);
+
+			const req = createMockReq({ path: "/note/Sub/Note" });
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(300);
+			expect(res._jsonBody.candidates).toHaveLength(2);
+		});
+
+		it("returns 300 when alias matches multiple files", async () => {
+			const file1 = new TFile("a.md");
+			const file2 = new TFile("b.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(null);
+			app.vault.getMarkdownFiles.mockReturnValue([file1, file2]);
+			app.metadataCache.getFileCache.mockImplementation((f: any) => ({
+				frontmatter: { aliases: ["SharedAlias"] },
+			}));
+
+			handler = new NoteHandler(app as any);
+
+			const req = createMockReq({ path: "/note/SharedAlias" });
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(300);
+			expect(res._jsonBody.candidates).toContain("a.md");
+			expect(res._jsonBody.candidates).toContain("b.md");
+		});
+
+		it("does not return 300 when only one file matches", async () => {
+			const file = new TFile("notes/Unique.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.vault.getMarkdownFiles.mockReturnValue([file]);
+			app.vault.adapter.readBinary.mockResolvedValue(
+				new TextEncoder().encode("content").buffer
+			);
+
+			handler = new NoteHandler(app as any);
+
+			const req = createMockReq({ path: "/note/Unique" });
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			expect(res.status).not.toHaveBeenCalledWith(300);
+		});
+
+		it("returns 300 on PUT when ambiguous", async () => {
+			const file1 = new TFile("a/Note.md");
+			const file2 = new TFile("b/Note.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file1);
+			app.vault.getMarkdownFiles.mockReturnValue([file1, file2]);
+			app.metadataCache.getFileCache.mockReturnValue(null);
+
+			handler = new NoteHandler(app as any);
+
+			const req = createMockReq({ path: "/note/Note", body: "content" });
+			const res = createMockRes();
+			await handler.handlePut(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(300);
+		});
+
+		it("returns 300 on DELETE when ambiguous", async () => {
+			const file1 = new TFile("a/Note.md");
+			const file2 = new TFile("b/Note.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file1);
+			app.vault.getMarkdownFiles.mockReturnValue([file1, file2]);
+			app.metadataCache.getFileCache.mockReturnValue(null);
+
+			handler = new NoteHandler(app as any);
+
+			const req = createMockReq({ path: "/note/Note" });
+			const res = createMockRes();
+			await handler.handleDelete(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(300);
+			expect(app.vault.adapter.remove).not.toHaveBeenCalled();
+		});
+
+		it("includes both basename and alias matches in candidates", async () => {
+			const file1 = new TFile("notes/RealName.md");
+			const file2 = new TFile("other/Different.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file1);
+			app.vault.getMarkdownFiles.mockReturnValue([file1, file2]);
+			app.metadataCache.getFileCache.mockImplementation((f: any) => {
+				if (f.path === "other/Different.md")
+					return { frontmatter: { aliases: ["RealName"] } };
+				return null;
+			});
+
+			handler = new NoteHandler(app as any);
+
+			const req = createMockReq({ path: "/note/RealName" });
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(300);
+			expect(res._jsonBody.candidates).toContain("notes/RealName.md");
+			expect(res._jsonBody.candidates).toContain("other/Different.md");
+		});
+	});
+
 	// --- GET ---
 	describe("handleGet", () => {
 		it("returns raw markdown by default", async () => {

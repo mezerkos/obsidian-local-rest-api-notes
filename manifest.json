@@ -1,9 +1,9 @@
 {
 	"id": "obsidian-local-rest-api-notes",
 	"name": "Local REST API Note Extension",
-	"version": "1.0.2",
 	"minAppVersion": "0.15.0",
 	"description": "Adds /note/* endpoints to Local REST API for wiki-link name resolution, alias lookup, and note move/rename",
 	"author": "thjlin",
-	"isDesktopOnly": true
+	"isDesktopOnly": true,
+	"version": "1.1.0"
 }
