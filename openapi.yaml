@@ -86,7 +86,7 @@ components:
           example: "Old Note Name"
         to:
           type: "string"
-          description: "New vault path. A `.md` extension is added if not present."
+          description: "New vault path. A `.md` extension is added if not present. Parent directories are created if they don't exist."
           example: "4-Archive/Old Note Name.md"
     MoveResponse:
       type: "object"
@@ -373,6 +373,7 @@ paths:
         Moves or renames a note, updating all backlinks via Obsidian's `fileManager.renameFile()`.
         The `from` field is resolved via wiki-link name (including aliases).
         A `.md` extension is added to `to` if not present.
+        Destination directories are created automatically if they don't exist.
       requestBody:
         required: true
         content:
