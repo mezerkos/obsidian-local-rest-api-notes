@@ -216,7 +216,29 @@ class NoteHandler {
 	}
 
 	private generatePreview(content: string): string {
-		const lines = content.split("\n").slice(0, 5);
+		const map = getDocumentMap(content);
+		const headingMap = (map as any).heading ?? {};
+
+		// Priority 1: Use ## Overview or ## Summary heading content
+		for (const name of ["Overview", "Summary"]) {
+			// Check both standalone and nested keys (e.g. "Overview" or "Title\u001fOverview")
+			const entry = headingMap[name] ?? Object.entries(headingMap).find(
+				([key]) => key.endsWith("\u001f" + name)
+			)?.[1];
+			if (entry) {
+				const slice = content.slice((entry as any).content.start, (entry as any).content.end).trim();
+				return slice.length > 200 ? slice.slice(0, 200) : slice;
+			}
+		}
+
+		// Priority 2: First content after frontmatter, up to 5 lines / 200 chars
+		let body = content;
+		const fmMatch = body.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
+		if (fmMatch) {
+			body = body.slice(fmMatch[0].length);
+		}
+
+		const lines = body.split("\n").slice(0, 5);
 		const joined = lines.join("\n");
 		return joined.length > 200 ? joined.slice(0, 200) : joined;
 	}

@@ -460,6 +460,54 @@ describe("NoteHandler", () => {
 			}
 		});
 
+		it("uses Overview heading content for preview", async () => {
+			const file1 = new TFile("a/Note.md");
+			const file2 = new TFile("b/Note.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file1);
+			app.vault.getMarkdownFiles.mockReturnValue([file1, file2]);
+			app.metadataCache.getFileCache.mockReturnValue(null);
+			app.vault.read.mockResolvedValue(
+				"---\ntitle: Test\n---\n# Title\nSome intro.\n## Overview\nThis is the overview content.\n## Details\nMore stuff."
+			);
+
+			handler = new NoteHandler(app as any);
+
+			const req = createMockReq({ path: "/note/Note" });
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(300);
+			for (const candidate of res._jsonBody.candidates) {
+				expect(candidate.preview).toContain("This is the overview content.");
+				expect(candidate.preview).not.toContain("Some intro.");
+			}
+		});
+
+		it("strips frontmatter from preview fallback", async () => {
+			const file1 = new TFile("a/Note.md");
+			const file2 = new TFile("b/Note.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file1);
+			app.vault.getMarkdownFiles.mockReturnValue([file1, file2]);
+			app.metadataCache.getFileCache.mockReturnValue(null);
+			app.vault.read.mockResolvedValue(
+				"---\ntitle: Test\ntags: [foo]\n---\n# My Note\nActual content here."
+			);
+
+			handler = new NoteHandler(app as any);
+
+			const req = createMockReq({ path: "/note/Note" });
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(300);
+			for (const candidate of res._jsonBody.candidates) {
+				expect(candidate.preview).not.toContain("title: Test");
+				expect(candidate.preview).not.toContain("---");
+				expect(candidate.preview).toContain("# My Note");
+				expect(candidate.preview).toContain("Actual content here.");
+			}
+		});
+
 		it("auto-resolves on PUT/PATCH with target when unique", async () => {
 			const file1 = new TFile("a/Note.md");
 			const file2 = new TFile("b/Note.md");
