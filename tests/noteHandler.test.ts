@@ -685,6 +685,63 @@ describe("NoteHandler", () => {
 			expect(body).toContain("Child text.");
 		});
 
+		it("resolves nested heading by leaf name", async () => {
+			const nested = [
+				"# Parent",
+				"Parent text.",
+				"## Child",
+				"Child text.",
+				"## Other",
+				"Other text.",
+			].join("\n");
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.vault.read.mockResolvedValue(nested);
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: {
+					"Target-Type": "heading",
+					Target: "Child",
+				},
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			expect(res.send).toHaveBeenCalled();
+			const body = res._body;
+			expect(body).toContain("Child text.");
+			expect(body).not.toContain("Other text.");
+		});
+
+		it("prefers exact heading match over leaf-name fallback", async () => {
+			const content = [
+				"# Top",
+				"Top text.",
+				"## Details",
+				"Nested details.",
+				"# Details",
+				"Top-level details.",
+			].join("\n");
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.vault.read.mockResolvedValue(content);
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: {
+					"Target-Type": "heading",
+					Target: "Details",
+				},
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			expect(res.send).toHaveBeenCalled();
+			const body = res._body;
+			expect(body).toContain("Top-level details.");
+		});
+
 		it("returns 404 when heading not found", async () => {
 			const file = new TFile("notes/Test.md");
 			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);

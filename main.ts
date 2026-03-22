@@ -253,7 +253,7 @@ class NoteHandler {
 
 		if (targetType === "heading") {
 			const key = target.split(delimiter).join("\u001f");
-			const entry = (map as any).heading?.[key];
+			const entry = this.resolveHeadingEntry((map as any).heading ?? {}, key);
 			if (entry) {
 				return [target.split(delimiter).join("::")];
 			}
@@ -431,6 +431,19 @@ class NoteHandler {
 		res.send(Buffer.from(content));
 	}
 
+	/** Look up a heading entry by exact key, falling back to leaf-name match. */
+	private resolveHeadingEntry(headingMap: Record<string, any>, key: string): any | undefined {
+		const exact = headingMap[key];
+		if (exact) return exact;
+
+		// Fallback: match by leaf name (last segment after \u001f)
+		const suffix = "\u001f" + key;
+		for (const [k, v] of Object.entries(headingMap)) {
+			if (k.endsWith(suffix)) return v;
+		}
+		return undefined;
+	}
+
 	private extractSection(
 		content: string,
 		targetType: string,
@@ -450,7 +463,10 @@ class NoteHandler {
 				: rawTarget;
 
 		const map = getDocumentMap(content);
-		const entry = (map as any)[targetType]?.[key];
+
+		const entry = targetType === "heading"
+			? this.resolveHeadingEntry((map as any).heading ?? {}, key)
+			: (map as any)[targetType]?.[key];
 		if (!entry) return null;
 
 		return content.slice(entry.content.start, entry.content.end);
