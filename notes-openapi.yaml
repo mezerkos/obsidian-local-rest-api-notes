@@ -55,12 +55,28 @@ components:
           example: 30060
         candidates:
           type: "array"
-          description: "Full vault paths of all matching notes."
+          description: "Candidate notes with previews and optional target matches."
           items:
-            type: "string"
-          example:
-            - "1-Projects/TODO.md"
-            - "4-Archive/TODO.md"
+            type: "object"
+            required:
+              - "path"
+              - "preview"
+            properties:
+              path:
+                type: "string"
+                description: "Full vault path of the matching note."
+                example: "1-Projects/TODO.md"
+              preview:
+                type: "string"
+                description: "First 5 lines of the note content, capped at 200 characters."
+                example: "---\ntitle: TODO\n---\n# Tasks\n"
+              matchingTargets:
+                type: "array"
+                description: "Targets matching the requested Target-Type/Target headers. Only present when Target-Type header was sent."
+                items:
+                  type: "string"
+                example:
+                  - "Tasks"
     NoteJson:
       type: "object"
       required:

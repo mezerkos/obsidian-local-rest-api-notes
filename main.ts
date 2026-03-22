@@ -170,7 +170,7 @@ class NoteHandler {
 		return matches;
 	}
 
-	private resolveNoteOrRespond(name: string, res: any): TFile | null {
+	private async resolveNoteOrRespond(name: string, req: any, res: any): Promise<TFile | null> {
 		const file = this.resolveNote(name);
 		if (!file) {
 			this.sendNotFound(res, name);
@@ -179,11 +179,72 @@ class NoteHandler {
 
 		const allMatches = this.findAllMatches(name);
 		if (allMatches.length > 1) {
-			this.sendAmbiguous(res, name, allMatches);
+			const targetType = req.get("Target-Type");
+			const rawTarget = req.get("Target");
+
+			if (targetType && rawTarget) {
+				const target = decodeURIComponent(rawTarget);
+				const delimiter = req.get("Target-Delimiter") || "::";
+				const resolved = await this.tryAutoResolve(allMatches, targetType, target, delimiter);
+				if (resolved) return resolved;
+			}
+
+			await this.sendAmbiguous(res, name, allMatches, req);
 			return null;
 		}
 
 		return file;
+	}
+
+	private async tryAutoResolve(
+		candidates: TFile[],
+		targetType: string,
+		target: string,
+		delimiter: string
+	): Promise<TFile | null> {
+		const matching: TFile[] = [];
+		for (const file of candidates) {
+			try {
+				const content = await this.app.vault.read(file);
+				const targets = this.findMatchingTargets(content, targetType, target, delimiter);
+				if (targets.length > 0) matching.push(file);
+			} catch {
+				// skip unreadable files
+			}
+		}
+		return matching.length === 1 ? matching[0] : null;
+	}
+
+	private generatePreview(content: string): string {
+		const lines = content.split("\n").slice(0, 5);
+		const joined = lines.join("\n");
+		return joined.length > 200 ? joined.slice(0, 200) : joined;
+	}
+
+	private findMatchingTargets(
+		content: string,
+		targetType: string,
+		target: string,
+		delimiter: string
+	): string[] {
+		const map = getDocumentMap(content);
+
+		if (targetType === "heading") {
+			const key = target.split(delimiter).join("\u001f");
+			const entry = (map as any).heading?.[key];
+			if (entry) {
+				return [target.split(delimiter).join("::")];
+			}
+			return [];
+		}
+
+		if (targetType === "block") {
+			const entry = (map as any).block?.[target];
+			if (entry) return [target];
+			return [];
+		}
+
+		return [];
 	}
 
 	private findSimilarNotes(name: string, limit = 5): string[] {
@@ -214,12 +275,41 @@ class NoteHandler {
 		res.status(404).json(body);
 	}
 
-	private sendAmbiguous(res: any, name: string, matches: TFile[]): void {
+	private async sendAmbiguous(res: any, name: string, matches: TFile[], req: any): Promise<void> {
+		const targetType = req.get("Target-Type");
+		const rawTarget = req.get("Target");
+		const delimiter = req.get("Target-Delimiter") || "::";
+
+		const candidates = await Promise.all(
+			matches.map(async (f) => {
+				let content = "";
+				try {
+					content = await this.app.vault.read(f);
+				} catch {
+					// empty preview on read failure
+				}
+
+				const candidate: Record<string, unknown> = {
+					path: f.path,
+					preview: this.generatePreview(content),
+				};
+
+				if (targetType && rawTarget) {
+					const target = decodeURIComponent(rawTarget);
+					candidate.matchingTargets = this.findMatchingTargets(
+						content, targetType, target, delimiter
+					);
+				}
+
+				return candidate;
+			})
+		);
+
 		res.status(300).json({
 			message:
 				"Multiple notes match the given name. Use a full vault path to disambiguate.",
 			errorCode: 30060,
-			candidates: matches.map((f) => f.path),
+			candidates,
 		});
 	}
 
@@ -261,7 +351,7 @@ class NoteHandler {
 	// --- GET /note/* ---
 	async handleGet(req: any, res: any): Promise<void> {
 		const name = this.extractName(req);
-		const file = this.resolveNoteOrRespond(name, res);
+		const file = await this.resolveNoteOrRespond(name, req, res);
 		if (!file) return;
 
 		res.set("Content-Location", encodeURI(file.path));
@@ -347,7 +437,7 @@ class NoteHandler {
 	// --- PUT /note/* ---
 	async handlePut(req: any, res: any): Promise<void> {
 		const name = this.extractName(req);
-		const file = this.resolveNoteOrRespond(name, res);
+		const file = await this.resolveNoteOrRespond(name, req, res);
 		if (!file) return;
 
 		res.set("Content-Location", encodeURI(file.path));
@@ -374,7 +464,7 @@ class NoteHandler {
 	// --- POST /note/* (append) ---
 	async handlePost(req: any, res: any): Promise<void> {
 		const name = this.extractName(req);
-		const file = this.resolveNoteOrRespond(name, res);
+		const file = await this.resolveNoteOrRespond(name, req, res);
 		if (!file) return;
 
 		res.set("Content-Location", encodeURI(file.path));
@@ -400,7 +490,7 @@ class NoteHandler {
 	// --- PATCH /note/* ---
 	async handlePatch(req: any, res: any): Promise<void> {
 		const name = this.extractName(req);
-		const file = this.resolveNoteOrRespond(name, res);
+		const file = await this.resolveNoteOrRespond(name, req, res);
 		if (!file) return;
 
 		res.set("Content-Location", encodeURI(file.path));
@@ -489,7 +579,7 @@ class NoteHandler {
 	// --- DELETE /note/* ---
 	async handleDelete(req: any, res: any): Promise<void> {
 		const name = this.extractName(req);
-		const file = this.resolveNoteOrRespond(name, res);
+		const file = await this.resolveNoteOrRespond(name, req, res);
 		if (!file) return;
 
 		res.set("Content-Location", encodeURI(file.path));
@@ -511,7 +601,7 @@ class NoteHandler {
 			return;
 		}
 
-		const file = this.resolveNoteOrRespond(from, res);
+		const file = await this.resolveNoteOrRespond(from, req, res);
 		if (!file) return;
 
 		let destPath: string = to;
