@@ -45,6 +45,7 @@ function asyncHandler(
 
 const CONTENT_TYPE_MARKDOWN = "text/markdown";
 const CONTENT_TYPE_NOTE_JSON = "application/vnd.olrapi.note+json";
+const CONTENT_TYPE_DOCUMENT_MAP = "application/vnd.olrapi.document-map+json";
 
 // --- Alias Cache ---
 
@@ -379,6 +380,33 @@ class NoteHandler {
 		res.set("Content-Location", encodeURI(file.path));
 
 		const targetType = req.get("Target-Type");
+
+		// Accept: application/vnd.olrapi.document-map+json → structural map
+		if (req.headers.accept === CONTENT_TYPE_DOCUMENT_MAP) {
+			const content = await this.app.vault.read(file);
+			const map = getDocumentMap(content);
+			const headingMap = (map as any).heading ?? {};
+
+			const headings: { displayPath: string; level: number }[] = [];
+			for (const [key, entry] of Object.entries(headingMap)) {
+				if (key === "") continue; // skip root entry
+				headings.push({
+					displayPath: key.replace(/\u001f/g, "::"),
+					level: (entry as any).level,
+				});
+			}
+
+			const blocks = Object.keys((map as any).block ?? {});
+
+			res.setHeader("Content-Type", CONTENT_TYPE_DOCUMENT_MAP);
+			res.send(JSON.stringify({
+				path: file.path,
+				headings,
+				blocks,
+				frontmatter: map.frontmatter,
+			}, null, 2));
+			return;
+		}
 
 		// Accept: application/vnd.olrapi.note+json → structured JSON
 		if (req.headers.accept === CONTENT_TYPE_NOTE_JSON) {
@@ -731,4 +759,4 @@ declare module "obsidian" {
 	}
 }
 
-export { AliasCache, NoteHandler, asyncHandler, CONTENT_TYPE_MARKDOWN, CONTENT_TYPE_NOTE_JSON };
+export { AliasCache, NoteHandler, asyncHandler, CONTENT_TYPE_MARKDOWN, CONTENT_TYPE_NOTE_JSON, CONTENT_TYPE_DOCUMENT_MAP };

@@ -77,6 +77,50 @@ components:
                   type: "string"
                 example:
                   - "Tasks"
+    DocumentMap:
+      type: "object"
+      required:
+        - "path"
+        - "headings"
+        - "blocks"
+        - "frontmatter"
+      properties:
+        path:
+          type: "string"
+          description: "Full vault path of the resolved file."
+          example: "1-Projects/TODO.md"
+        headings:
+          type: "array"
+          description: |
+            All headings in the document with their full `::` paths and levels.
+            Note: if the same heading name appears multiple times at the same
+            nesting level (e.g. multiple `### [[2026.03.21]]` entries), only
+            the last occurrence is included. This is a known limitation of the
+            underlying document map parser.
+          items:
+            type: "object"
+            required:
+              - "displayPath"
+              - "level"
+            properties:
+              displayPath:
+                type: "string"
+                description: "Full heading path using `::` as delimiter. Use this value as the `Target` header for section extraction."
+                example: "Event Log::[[2026.03.21]]"
+              level:
+                type: "number"
+                description: "Heading level (1 = `#`, 2 = `##`, etc.)."
+                example: 3
+        blocks:
+          type: "array"
+          description: "All block reference IDs (e.g. `^myblock`)."
+          items:
+            type: "string"
+          example:
+            - "myblock"
+        frontmatter:
+          type: "object"
+          description: "Parsed YAML frontmatter key-value pairs."
     NoteJson:
       type: "object"
       required:
@@ -206,6 +250,9 @@ paths:
             application/vnd.olrapi.note+json:
               schema:
                 $ref: "#/components/schemas/NoteJson"
+            application/vnd.olrapi.document-map+json:
+              schema:
+                $ref: "#/components/schemas/DocumentMap"
         "300":
           description: "Ambiguous — multiple notes match"
           content:

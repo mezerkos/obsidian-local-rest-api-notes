@@ -588,6 +588,58 @@ describe("NoteHandler", () => {
 			expect(body.tags).toContain("foo");
 		});
 
+		it("returns document map when Accept header is set", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.vault.read.mockResolvedValue(
+				"---\ntitle: Test\ntags: [foo]\n---\n# Intro\nText.\n## Details\nMore.\n## Summary\nEnd.\n"
+			);
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: {
+					accept: "application/vnd.olrapi.document-map+json",
+				},
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			expect(res.setHeader).toHaveBeenCalledWith(
+				"Content-Type",
+				"application/vnd.olrapi.document-map+json"
+			);
+			const body = JSON.parse(res._body);
+			expect(body.path).toBe("notes/Test.md");
+			expect(body.headings).toEqual([
+				{ displayPath: "Intro", level: 1 },
+				{ displayPath: "Intro::Details", level: 2 },
+				{ displayPath: "Intro::Summary", level: 2 },
+			]);
+			expect(body.frontmatter).toEqual({ title: "Test", tags: ["foo"] });
+			expect(body.blocks).toEqual([]);
+		});
+
+		it("returns block IDs in document map", async () => {
+			const file = new TFile("notes/Test.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.vault.read.mockResolvedValue(
+				"A paragraph. ^block1\n\nAnother. ^block2\n"
+			);
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: {
+					accept: "application/vnd.olrapi.document-map+json",
+				},
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			const body = JSON.parse(res._body);
+			expect(body.blocks).toContain("block1");
+			expect(body.blocks).toContain("block2");
+		});
+
 		it("sets Content-Location header", async () => {
 			const file = new TFile("some/path/Note.md");
 			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
