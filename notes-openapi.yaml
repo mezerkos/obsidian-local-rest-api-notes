@@ -74,6 +74,27 @@ components:
         content:
           type: "string"
           description: "Full file content."
+        periodic:
+          type: "object"
+          description: "Periodic note metadata (only present for periodic note requests)."
+          properties:
+            period:
+              type: "string"
+              description: "The period type (daily, weekly, monthly, quarterly, yearly)."
+              enum:
+                - "daily"
+                - "weekly"
+                - "monthly"
+                - "quarterly"
+                - "yearly"
+            date:
+              type: "string"
+              description: "The actual date used (YYYY-MM-DD format, after normalization)."
+              example: "2026-03-03"
+            requested:
+              type: "string"
+              description: "The date requested by the client (may differ from date if normalization occurred)."
+              example: "2026-02-31"
     MoveRequest:
       type: "object"
       required:
@@ -364,6 +385,370 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/NoteNotFoundError"
+  /periodic-note/{period}/:
+    parameters:
+      - name: "period"
+        in: "path"
+        required: true
+        description: |
+          The period type for the note.
+        schema:
+          type: "string"
+          enum:
+            - "daily"
+            - "weekly"
+            - "monthly"
+            - "quarterly"
+            - "yearly"
+    get:
+      tags:
+        - "Periodic Note"
+      summary: "Get current periodic note"
+      description: |
+        Returns the content of the current periodic note (today/this week/this month/etc).
+
+        Supports the same features as `/note/*`:
+        - `Accept: application/vnd.olrapi.note+json` for structured JSON
+        - `Target-Type` and `Target` headers for section extraction
+
+        Includes hierarchical Link headers to parent periods.
+      responses:
+        "200":
+          description: "Success"
+          headers:
+            Content-Location:
+              description: "Vault path of the resolved file (URL-encoded)."
+              schema:
+                type: "string"
+            Link:
+              description: "Hierarchical navigation links to parent periods."
+              schema:
+                type: "string"
+          content:
+            text/markdown:
+              schema:
+                type: "string"
+            application/vnd.olrapi.note+json:
+              schema:
+                $ref: "#/components/schemas/NoteJson"
+        "404":
+          description: "Periodic note does not exist"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NoteNotFoundError"
+        "400":
+          description: "Periodic Notes plugin not enabled"
+          content:
+            application/json:
+              schema:
+                type: "object"
+                properties:
+                  message:
+                    type: "string"
+                  errorCode:
+                    type: "number"
+    put:
+      tags:
+        - "Periodic Note"
+      summary: "Update current periodic note"
+      description: |
+        Overwrites the content of the current periodic note.
+        Creates an empty note if it doesn't exist (no template).
+      requestBody:
+        content:
+          text/markdown:
+            schema:
+              type: "string"
+          "*/*":
+            schema:
+              type: "string"
+              format: "binary"
+      responses:
+        "204":
+          description: "Success"
+          headers:
+            Content-Location:
+              description: "Vault path of the resolved file (URL-encoded)."
+              schema:
+                type: "string"
+            Link:
+              description: "Hierarchical navigation links."
+              schema:
+                type: "string"
+        "400":
+          description: "Invalid request"
+    post:
+      tags:
+        - "Periodic Note"
+      summary: "Append to current periodic note"
+      description: |
+        Appends content to the current periodic note.
+        Creates the note from template if it doesn't exist.
+      requestBody:
+        required: true
+        content:
+          text/markdown:
+            schema:
+              type: "string"
+      responses:
+        "204":
+          description: "Success"
+          headers:
+            Content-Location:
+              description: "Vault path of the resolved file (URL-encoded)."
+              schema:
+                type: "string"
+            Link:
+              description: "Hierarchical navigation links."
+              schema:
+                type: "string"
+        "400":
+          description: "Invalid request"
+    patch:
+      tags:
+        - "Periodic Note"
+      summary: "Patch current periodic note"
+      description: |
+        Applies a structured patch to the current periodic note.
+        Supports the same PATCH operations as `/note/*`:
+        - append/prepend/replace on headings, blocks, and frontmatter
+        - Creates the note from template if it doesn't exist
+      parameters:
+        - name: "Operation"
+          in: "header"
+          required: true
+          schema:
+            type: "string"
+            enum:
+              - "append"
+              - "prepend"
+              - "replace"
+        - name: "Target-Type"
+          in: "header"
+          required: true
+          schema:
+            type: "string"
+            enum:
+              - "heading"
+              - "block"
+              - "frontmatter"
+        - name: "Target"
+          in: "header"
+          schema:
+            type: "string"
+        - name: "Target-Delimiter"
+          in: "header"
+          schema:
+            type: "string"
+            default: "::"
+        - name: "Create-Target-If-Missing"
+          in: "header"
+          schema:
+            type: "string"
+        - name: "Apply-If-Content-Preexists"
+          in: "header"
+          schema:
+            type: "string"
+        - name: "Trim-Target-Whitespace"
+          in: "header"
+          schema:
+            type: "string"
+      requestBody:
+        required: true
+        content:
+          text/markdown:
+            schema:
+              type: "string"
+          application/json:
+            schema:
+              type: "object"
+      responses:
+        "200":
+          description: "Success"
+          headers:
+            Content-Location:
+              description: "Vault path of the resolved file (URL-encoded)."
+              schema:
+                type: "string"
+            Link:
+              description: "Hierarchical navigation links."
+              schema:
+                type: "string"
+          content:
+            text/markdown:
+              schema:
+                type: "string"
+        "400":
+          description: "Invalid patch"
+        "404":
+          description: "Note not found"
+    delete:
+      tags:
+        - "Periodic Note"
+      summary: "Delete current periodic note"
+      responses:
+        "204":
+          description: "Success"
+          headers:
+            Content-Location:
+              description: "Vault path of the deleted file (URL-encoded)."
+              schema:
+                type: "string"
+        "404":
+          description: "Note not found"
+  /periodic-note/{period}/{date}:
+    parameters:
+      - name: "period"
+        in: "path"
+        required: true
+        schema:
+          type: "string"
+          enum:
+            - "daily"
+            - "weekly"
+            - "monthly"
+            - "quarterly"
+            - "yearly"
+      - name: "date"
+        in: "path"
+        required: true
+        description: |
+          Date in ISO 8601 format or period-specific format.
+          
+          **Formats by period:**
+          - **daily**: `YYYY-MM-DD` (e.g., `2026-01-15`)
+          - **weekly**: `YYYY-Www` (e.g., `2026-W03`) or `YYYY-MM-DD`
+          - **monthly**: `YYYY-MM` (e.g., `2026-03`) or `YYYY-MM-DD`
+          - **quarterly**: `YYYY-Qq` (e.g., `2026-Q1`) or `YYYY-MM-DD`
+          - **yearly**: `YYYY` (e.g., `2026`) or `YYYY-MM-DD`
+          
+          **Separators**: Dashes (`-`), dots (`.`), and slashes (`/`) are all accepted.
+          
+          **Normalization**: Invalid dates are automatically normalized.
+          For example, `2026-02-31` becomes `2026-03-03`.
+          The response includes both the requested and actual dates.
+          
+          **Negative offsets**: You can use negative values for relative dates.
+          For example, `2026-W-4` is 4 weeks before week 1 of 2026,
+          `2026--2` is 2 months before January 2026.
+        schema:
+          type: "string"
+    get:
+      tags:
+        - "Periodic Note"
+      summary: "Get periodic note for specific date"
+      description: |
+        Returns the content of a periodic note for the specified date.
+        
+        Supports the same features as `/note/*` including NoteJson format,
+        section extraction, and structured PATCH operations.
+      responses:
+        "200":
+          description: "Success"
+          headers:
+            Content-Location:
+              description: "Vault path of the resolved file (URL-encoded)."
+              schema:
+                type: "string"
+            Link:
+              description: "Hierarchical navigation links."
+              schema:
+                type: "string"
+          content:
+            text/markdown:
+              schema:
+                type: "string"
+            application/vnd.olrapi.note+json:
+              schema:
+                $ref: "#/components/schemas/NoteJson"
+        "404":
+          description: "Periodic note does not exist"
+        "400":
+          description: "Invalid date format or Periodic Notes plugin not enabled"
+    put:
+      tags:
+        - "Periodic Note"
+      summary: "Update periodic note for specific date"
+      description: |
+        Overwrites the content of a periodic note for the specified date.
+        Creates an empty note if it doesn't exist.
+      requestBody:
+        content:
+          text/markdown:
+            schema:
+              type: "string"
+      responses:
+        "204":
+          description: "Success"
+    post:
+      tags:
+        - "Periodic Note"
+      summary: "Append to periodic note for specific date"
+      description: |
+        Appends content to a periodic note for the specified date.
+        Creates the note from template if it doesn't exist.
+      requestBody:
+        required: true
+        content:
+          text/markdown:
+            schema:
+              type: "string"
+      responses:
+        "204":
+          description: "Success"
+    patch:
+      tags:
+        - "Periodic Note"
+      summary: "Patch periodic note for specific date"
+      description: |
+        Applies a structured patch to a periodic note for the specified date.
+        Creates the note from template if it doesn't exist.
+      parameters:
+        - name: "Operation"
+          in: "header"
+          required: true
+          schema:
+            type: "string"
+            enum:
+              - "append"
+              - "prepend"
+              - "replace"
+        - name: "Target-Type"
+          in: "header"
+          required: true
+          schema:
+            type: "string"
+            enum:
+              - "heading"
+              - "block"
+              - "frontmatter"
+        - name: "Target"
+          in: "header"
+          schema:
+            type: "string"
+      requestBody:
+        required: true
+        content:
+          text/markdown:
+            schema:
+              type: "string"
+      responses:
+        "200":
+          description: "Success"
+          content:
+            text/markdown:
+              schema:
+                type: "string"
+    delete:
+      tags:
+        - "Periodic Note"
+      summary: "Delete periodic note for specific date"
+      responses:
+        "204":
+          description: "Success"
+        "404":
+          description: "Note not found"
   /note-move/:
     post:
       tags:

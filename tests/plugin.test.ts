@@ -94,8 +94,33 @@ describe("NoteApiExtensionPlugin", () => {
 			const api = getPluginApi();
 			const routeChain = api.addRoute.mock.results[0].value;
 
-			// .get() is called twice: first for /note/*, second for /notes-openapi.yaml
-			const yamlHandler = routeChain.get.mock.calls[1][0];
+			// .get() is called for /note/*, /periodic-note/*, and /notes-openapi.yaml
+			// Find the yaml handler by checking which call has a handler that works with empty req
+			const getCalls = routeChain.get.mock.calls;
+			let yamlHandler: any = null;
+			
+			// Try each get handler to find the yaml one
+			for (let i = 0; i < getCalls.length; i++) {
+				const handler = getCalls[i][0];
+				const mockRes: any = {
+					set: vi.fn().mockReturnThis(),
+					send: vi.fn().mockReturnThis(),
+				};
+				try {
+					handler({}, mockRes);
+					// If it succeeds and sets content-type to yaml, it's the yaml handler
+					if (mockRes.set.mock.calls.some((call: any[]) => 
+						call[0] === "Content-Type" && call[1] === "text/yaml; charset=utf-8"
+					)) {
+						yamlHandler = handler;
+						break;
+					}
+				} catch (e) {
+					// Not the yaml handler, continue
+				}
+			}
+
+			expect(yamlHandler).toBeDefined();
 
 			const mockRes: any = {
 				set: vi.fn().mockReturnThis(),
