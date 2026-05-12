@@ -23,6 +23,24 @@ import {
 } from "markdown-patch";
 import mime from "mime-types";
 import openapiYaml from "./notes-openapi.yaml";
+import {
+	getAllDailyNotes,
+	getDailyNote,
+	createDailyNote,
+	getAllWeeklyNotes,
+	getWeeklyNote,
+	createWeeklyNote,
+	getAllMonthlyNotes,
+	getMonthlyNote,
+	createMonthlyNote,
+	getAllQuarterlyNotes,
+	getQuarterlyNote,
+	createQuarterlyNote,
+	getAllYearlyNotes,
+	getYearlyNote,
+	createYearlyNote,
+	appHasDailyNotesPluginLoaded,
+} from "obsidian-daily-notes-interface";
 
 // --- Async handler wrapper (Express doesn't catch async rejections) ---
 
@@ -551,9 +569,9 @@ class PeriodicNoteHandler {
 		this.noteHandler = noteHandler;
 	}
 
-	// Get Periodic Notes plugin instance
-	private getPeriodicNotes(): any {
-		return this.app.plugins.plugins["periodic-notes"];
+	// Check if Periodic Notes plugin is enabled
+	private isPeriodicNotesEnabled(): boolean {
+		return !!this.app.plugins.plugins["periodic-notes"];
 	}
 
 	// Normalize separators in date input
@@ -699,25 +717,22 @@ class PeriodicNoteHandler {
 
 	// Get note for period and date
 	private getPeriodicNote(period: string, date: any): TFile | null {
-		const periodicNotes = this.getPeriodicNotes();
-		if (!periodicNotes) return null;
-
 		switch (period) {
 			case "daily":
-				const dailyNotes = periodicNotes.getAllDailyNotes();
-				return periodicNotes.getDailyNote(date, dailyNotes);
+				const dailyNotes = getAllDailyNotes();
+				return getDailyNote(date, dailyNotes);
 			case "weekly":
-				const weeklyNotes = periodicNotes.getAllWeeklyNotes();
-				return periodicNotes.getWeeklyNote(date, weeklyNotes);
+				const weeklyNotes = getAllWeeklyNotes();
+				return getWeeklyNote(date, weeklyNotes);
 			case "monthly":
-				const monthlyNotes = periodicNotes.getAllMonthlyNotes();
-				return periodicNotes.getMonthlyNote(date, monthlyNotes);
+				const monthlyNotes = getAllMonthlyNotes();
+				return getMonthlyNote(date, monthlyNotes);
 			case "quarterly":
-				const quarterlyNotes = periodicNotes.getAllQuarterlyNotes();
-				return periodicNotes.getQuarterlyNote(date, quarterlyNotes);
+				const quarterlyNotes = getAllQuarterlyNotes();
+				return getQuarterlyNote(date, quarterlyNotes);
 			case "yearly":
-				const yearlyNotes = periodicNotes.getAllYearlyNotes();
-				return periodicNotes.getYearlyNote(date, yearlyNotes);
+				const yearlyNotes = getAllYearlyNotes();
+				return getYearlyNote(date, yearlyNotes);
 		}
 		return null;
 	}
@@ -728,26 +743,23 @@ class PeriodicNoteHandler {
 		date: any,
 		useTemplate: boolean
 	): Promise<TFile | null> {
-		const periodicNotes = this.getPeriodicNotes();
-		if (!periodicNotes) return null;
-
 		let file: TFile | null = null;
 
 		switch (period) {
 			case "daily":
-				file = await periodicNotes.createDailyNote(date);
+				file = await createDailyNote(date);
 				break;
 			case "weekly":
-				file = await periodicNotes.createWeeklyNote(date);
+				file = await createWeeklyNote(date);
 				break;
 			case "monthly":
-				file = await periodicNotes.createMonthlyNote(date);
+				file = await createMonthlyNote(date);
 				break;
 			case "quarterly":
-				file = await periodicNotes.createQuarterlyNote(date);
+				file = await createQuarterlyNote(date);
 				break;
 			case "yearly":
-				file = await periodicNotes.createYearlyNote(date);
+				file = await createYearlyNote(date);
 				break;
 		}
 
@@ -913,11 +925,12 @@ class PeriodicNoteHandler {
 
 		const { period, date, requested } = parsed;
 
-		// Check if Periodic Notes plugin is available
-		const periodicNotes = this.getPeriodicNotes();
-		if (!periodicNotes) {
+		// Check if any periodic notes plugin is available
+		const hasDaily = appHasDailyNotesPluginLoaded();
+		const hasPeriodic = this.isPeriodicNotesEnabled();
+		if (!hasDaily && !hasPeriodic) {
 			res.status(400).json({
-				message: "Periodic Notes plugin is not enabled.",
+				message: "Neither Daily Notes nor Periodic Notes plugin is enabled.",
 				errorCode: 40002,
 			});
 			return;

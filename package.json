@@ -25,6 +25,7 @@
 		"markdown-patch": "latest",
 		"mime-types": "^2.1.35",
 		"obsidian": "latest",
+		"obsidian-daily-notes-interface": "^1.0.0",
 		"obsidian-local-rest-api": "latest",
 		"tslib": "2.4.0",
 		"typescript": "4.7.4",
