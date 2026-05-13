@@ -1113,22 +1113,29 @@ class PeriodicNoteHandler {
 			requested,
 		};
 
-		// Modify request to look like a /note/* request
-		(req as any)._originalPath = req.path;
-		req.path = `/note/${file.basename}`;
+			// Create a modified request object with overridden path
+			// (req.path is read-only in newer Node/Express versions)
+			const modifiedReq = Object.create(req);
+			Object.defineProperty(modifiedReq, 'path', {
+				value: `/note/${file.basename}`,
+				writable: false,
+				enumerable: true,
+				configurable: true
+			});
+			(modifiedReq as any)._originalPath = req.path;
 
-		// Delegate to NoteHandler
+			// Delegate to NoteHandler
 		switch (method) {
 			case "GET":
-				return this.noteHandler.handleGet(req, res);
+				return this.noteHandler.handleGet(modifiedReq, res);
 			case "PUT":
-				return this.noteHandler.handlePut(req, res);
+				return this.noteHandler.handlePut(modifiedReq, res);
 			case "POST":
-				return this.noteHandler.handlePost(req, res);
+				return this.noteHandler.handlePost(modifiedReq, res);
 			case "PATCH":
-				return this.noteHandler.handlePatch(req, res);
+				return this.noteHandler.handlePatch(modifiedReq, res);
 			case "DELETE":
-				return this.noteHandler.handleDelete(req, res);
+				return this.noteHandler.handleDelete(modifiedReq, res);
 		}
 	}
 
