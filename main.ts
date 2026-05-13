@@ -45,6 +45,7 @@ function asyncHandler(
 
 const CONTENT_TYPE_MARKDOWN = "text/markdown";
 const CONTENT_TYPE_NOTE_JSON = "application/vnd.olrapi.note+json";
+const CONTENT_TYPE_DOCUMENT_MAP = "application/vnd.olrapi.document-map+json";
 
 // --- Alias Cache ---
 
@@ -170,7 +171,7 @@ class NoteHandler {
 		return matches;
 	}
 
-	private resolveNoteOrRespond(name: string, res: any): TFile | null {
+	private async resolveNoteOrRespond(name: string, req: any, res: any): Promise<TFile | null> {
 		const file = this.resolveNote(name);
 		if (!file) {
 			this.sendNotFound(res, name);
@@ -179,11 +180,94 @@ class NoteHandler {
 
 		const allMatches = this.findAllMatches(name);
 		if (allMatches.length > 1) {
-			this.sendAmbiguous(res, name, allMatches);
+			const targetType = req.get("Target-Type");
+			const rawTarget = req.get("Target");
+
+			if (targetType && rawTarget) {
+				const target = decodeURIComponent(rawTarget);
+				const delimiter = req.get("Target-Delimiter") || "::";
+				const resolved = await this.tryAutoResolve(allMatches, targetType, target, delimiter);
+				if (resolved) return resolved;
+			}
+
+			await this.sendAmbiguous(res, name, allMatches, req);
 			return null;
 		}
 
 		return file;
+	}
+
+	private async tryAutoResolve(
+		candidates: TFile[],
+		targetType: string,
+		target: string,
+		delimiter: string
+	): Promise<TFile | null> {
+		const matching: TFile[] = [];
+		for (const file of candidates) {
+			try {
+				const content = await this.app.vault.read(file);
+				const targets = this.findMatchingTargets(content, targetType, target, delimiter);
+				if (targets.length > 0) matching.push(file);
+			} catch {
+				// skip unreadable files
+			}
+		}
+		return matching.length === 1 ? matching[0] : null;
+	}
+
+	private generatePreview(content: string): string {
+		const map = getDocumentMap(content);
+		const headingMap = (map as any).heading ?? {};
+
+		// Priority 1: Use ## Overview or ## Summary heading content
+		for (const name of ["Overview", "Summary"]) {
+			// Check both standalone and nested keys (e.g. "Overview" or "Title\u001fOverview")
+			const entry = headingMap[name] ?? Object.entries(headingMap).find(
+				([key]) => key.endsWith("\u001f" + name)
+			)?.[1];
+			if (entry) {
+				const slice = content.slice((entry as any).content.start, (entry as any).content.end).trim();
+				return slice.length > 200 ? slice.slice(0, 200) : slice;
+			}
+		}
+
+		// Priority 2: First content after frontmatter, up to 5 lines / 200 chars
+		let body = content;
+		const fmMatch = body.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
+		if (fmMatch) {
+			body = body.slice(fmMatch[0].length);
+		}
+
+		const lines = body.split("\n").slice(0, 5);
+		const joined = lines.join("\n");
+		return joined.length > 200 ? joined.slice(0, 200) : joined;
+	}
+
+	private findMatchingTargets(
+		content: string,
+		targetType: string,
+		target: string,
+		delimiter: string
+	): string[] {
+		const map = getDocumentMap(content);
+
+		if (targetType === "heading") {
+			const key = target.split(delimiter).join("\u001f");
+			const entry = this.resolveHeadingEntry((map as any).heading ?? {}, key);
+			if (entry) {
+				return [target.split(delimiter).join("::")];
+			}
+			return [];
+		}
+
+		if (targetType === "block") {
+			const entry = (map as any).block?.[target];
+			if (entry) return [target];
+			return [];
+		}
+
+		return [];
 	}
 
 	private findSimilarNotes(name: string, limit = 5): string[] {
@@ -214,12 +298,41 @@ class NoteHandler {
 		res.status(404).json(body);
 	}
 
-	private sendAmbiguous(res: any, name: string, matches: TFile[]): void {
+	private async sendAmbiguous(res: any, name: string, matches: TFile[], req: any): Promise<void> {
+		const targetType = req.get("Target-Type");
+		const rawTarget = req.get("Target");
+		const delimiter = req.get("Target-Delimiter") || "::";
+
+		const candidates = await Promise.all(
+			matches.map(async (f) => {
+				let content = "";
+				try {
+					content = await this.app.vault.read(f);
+				} catch {
+					// empty preview on read failure
+				}
+
+				const candidate: Record<string, unknown> = {
+					path: f.path,
+					preview: this.generatePreview(content),
+				};
+
+				if (targetType && rawTarget) {
+					const target = decodeURIComponent(rawTarget);
+					candidate.matchingTargets = this.findMatchingTargets(
+						content, targetType, target, delimiter
+					);
+				}
+
+				return candidate;
+			})
+		);
+
 		res.status(300).json({
 			message:
 				"Multiple notes match the given name. Use a full vault path to disambiguate.",
 			errorCode: 30060,
-			candidates: matches.map((f) => f.path),
+			candidates,
 		});
 	}
 
@@ -261,12 +374,39 @@ class NoteHandler {
 	// --- GET /note/* ---
 	async handleGet(req: any, res: any): Promise<void> {
 		const name = this.extractName(req);
-		const file = this.resolveNoteOrRespond(name, res);
+		const file = await this.resolveNoteOrRespond(name, req, res);
 		if (!file) return;
 
 		res.set("Content-Location", encodeURI(file.path));
 
 		const targetType = req.get("Target-Type");
+
+		// Accept: application/vnd.olrapi.document-map+json → structural map
+		if (req.headers.accept === CONTENT_TYPE_DOCUMENT_MAP) {
+			const content = await this.app.vault.read(file);
+			const map = getDocumentMap(content);
+			const headingMap = (map as any).heading ?? {};
+
+			const headings: { displayPath: string; level: number }[] = [];
+			for (const [key, entry] of Object.entries(headingMap)) {
+				if (key === "") continue; // skip root entry
+				headings.push({
+					displayPath: key.replace(/\u001f/g, "::"),
+					level: (entry as any).level,
+				});
+			}
+
+			const blocks = Object.keys((map as any).block ?? {});
+
+			res.setHeader("Content-Type", CONTENT_TYPE_DOCUMENT_MAP);
+			res.send(JSON.stringify({
+				path: file.path,
+				headings,
+				blocks,
+				frontmatter: map.frontmatter,
+			}, null, 2));
+			return;
+		}
 
 		// Accept: application/vnd.olrapi.note+json → structured JSON
 		if (req.headers.accept === CONTENT_TYPE_NOTE_JSON) {
@@ -319,6 +459,19 @@ class NoteHandler {
 		res.send(Buffer.from(content));
 	}
 
+	/** Look up a heading entry by exact key, falling back to leaf-name match. */
+	private resolveHeadingEntry(headingMap: Record<string, any>, key: string): any | undefined {
+		const exact = headingMap[key];
+		if (exact) return exact;
+
+		// Fallback: match by leaf name (last segment after \u001f)
+		const suffix = "\u001f" + key;
+		for (const [k, v] of Object.entries(headingMap)) {
+			if (k.endsWith(suffix)) return v;
+		}
+		return undefined;
+	}
+
 	private extractSection(
 		content: string,
 		targetType: string,
@@ -338,7 +491,10 @@ class NoteHandler {
 				: rawTarget;
 
 		const map = getDocumentMap(content);
-		const entry = (map as any)[targetType]?.[key];
+
+		const entry = targetType === "heading"
+			? this.resolveHeadingEntry((map as any).heading ?? {}, key)
+			: (map as any)[targetType]?.[key];
 		if (!entry) return null;
 
 		return content.slice(entry.content.start, entry.content.end);
@@ -347,7 +503,7 @@ class NoteHandler {
 	// --- PUT /note/* ---
 	async handlePut(req: any, res: any): Promise<void> {
 		const name = this.extractName(req);
-		const file = this.resolveNoteOrRespond(name, res);
+		const file = await this.resolveNoteOrRespond(name, req, res);
 		if (!file) return;
 
 		res.set("Content-Location", encodeURI(file.path));
@@ -374,7 +530,7 @@ class NoteHandler {
 	// --- POST /note/* (append) ---
 	async handlePost(req: any, res: any): Promise<void> {
 		const name = this.extractName(req);
-		const file = this.resolveNoteOrRespond(name, res);
+		const file = await this.resolveNoteOrRespond(name, req, res);
 		if (!file) return;
 
 		res.set("Content-Location", encodeURI(file.path));
@@ -400,7 +556,7 @@ class NoteHandler {
 	// --- PATCH /note/* ---
 	async handlePatch(req: any, res: any): Promise<void> {
 		const name = this.extractName(req);
-		const file = this.resolveNoteOrRespond(name, res);
+		const file = await this.resolveNoteOrRespond(name, req, res);
 		if (!file) return;
 
 		res.set("Content-Location", encodeURI(file.path));
@@ -489,7 +645,7 @@ class NoteHandler {
 	// --- DELETE /note/* ---
 	async handleDelete(req: any, res: any): Promise<void> {
 		const name = this.extractName(req);
-		const file = this.resolveNoteOrRespond(name, res);
+		const file = await this.resolveNoteOrRespond(name, req, res);
 		if (!file) return;
 
 		res.set("Content-Location", encodeURI(file.path));
@@ -511,7 +667,7 @@ class NoteHandler {
 			return;
 		}
 
-		const file = this.resolveNoteOrRespond(from, res);
+		const file = await this.resolveNoteOrRespond(from, req, res);
 		if (!file) return;
 
 		let destPath: string = to;
@@ -603,4 +759,4 @@ declare module "obsidian" {
 	}
 }
 
-export { AliasCache, NoteHandler, asyncHandler, CONTENT_TYPE_MARKDOWN, CONTENT_TYPE_NOTE_JSON };
+export { AliasCache, NoteHandler, asyncHandler, CONTENT_TYPE_MARKDOWN, CONTENT_TYPE_NOTE_JSON, CONTENT_TYPE_DOCUMENT_MAP };
