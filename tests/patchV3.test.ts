@@ -30,7 +30,7 @@ describe("PATCH /note/* (V3)", () => {
 	beforeEach(() => {
 		app = createMockApp();
 		app.vault.getMarkdownFiles.mockReturnValue([]);
-		handler = new NoteHandler(app as any);
+		handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
 
 		file = new TFile("notes/Test.md");
 		app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
