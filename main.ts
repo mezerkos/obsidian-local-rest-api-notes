@@ -343,7 +343,7 @@ class NoteHandler {
 	}
 
 	/** Build a NoteJson metadata object for a file (same as upstream getFileMetadataObject) */
-	private async getFileMetadata(file: TFile): Promise<Record<string, unknown>> {
+	private async getFileMetadata(file: TFile, req?: any): Promise<Record<string, unknown>> {
 		const cache = this.app.metadataCache.getFileCache(file);
 
 		const frontmatter = { ...(cache?.frontmatter ?? {}) };
@@ -362,13 +362,20 @@ class NoteHandler {
 			.map((tag: any) => tag.toString().replace(/^#/, ""))
 			.filter((value: string, index: number, self: string[]) => self.indexOf(value) === index);
 
-		return {
+		const metadata: Record<string, unknown> = {
 			tags,
 			frontmatter,
 			stat: file.stat,
 			path: file.path,
 			content: await this.app.vault.cachedRead(file),
 		};
+
+		// Add periodic metadata if this is a periodic note request
+		if (req && (req as any)._periodicInfo) {
+			metadata.periodic = (req as any)._periodicInfo;
+		}
+
+		return metadata;
 	}
 
 	// --- GET /note/* ---
@@ -409,8 +416,8 @@ class NoteHandler {
 		}
 
 		// Accept: application/vnd.olrapi.note+json → structured JSON
-		if (req.headers.accept === CONTENT_TYPE_NOTE_JSON) {
-			const metadata = await this.getFileMetadata(file);
+			if (req.headers.accept === CONTENT_TYPE_NOTE_JSON) {
+				const metadata = await this.getFileMetadata(file, req);
 
 			if (targetType) {
 				const section = this.extractSection(
@@ -689,6 +696,451 @@ class NoteHandler {
 	}
 }
 
+// --- Periodic Note Handler ---
+
+class PeriodicNoteHandler {
+	private app: Plugin["app"];
+	private noteHandler: NoteHandler;
+
+	constructor(app: Plugin["app"], noteHandler: NoteHandler) {
+		this.app = app;
+		this.noteHandler = noteHandler;
+	}
+
+	// Get Periodic Notes plugin instance
+	private getPeriodicNotes(): any {
+		return this.app.plugins.plugins["periodic-notes"];
+	}
+
+	// Normalize separators in date input
+	private normalizeSeparators(input: string): string {
+		return input.replace(/[./]/g, '-');
+	}
+
+	// Validate input for malformed patterns
+	private isValidInput(input: string): boolean {
+		// Reject empty
+		if (!input) return false;
+
+		// Reject triple dashes or more (malformed)
+		if (input.includes('---')) return false;
+
+		return true;
+	}
+
+	// Parse period from path
+	private parsePeriod(periodStr: string): string | null {
+		const valid = ["daily", "weekly", "monthly", "quarterly", "yearly"];
+		return valid.includes(periodStr) ? periodStr : null;
+	}
+
+	// Parse date input with best-effort normalization
+	private parseDate(input: string, period: string): any | null {
+		const moment = (window as any).moment;
+
+		// Normalize separators
+		const normalized = this.normalizeSeparators(input);
+
+		// Validate
+		if (!this.isValidInput(normalized)) {
+			return null;
+		}
+
+		// Try ISO date: YYYY-MM-DD (lenient, allows rollover)
+		let date = moment(normalized, "YYYY-MM-DD");
+		if (date && date.isValid()) {
+			// Validate year range
+			const year = date.year();
+			if (year < 1900 || year > 2100) return null;
+			return date;
+		}
+		// Try with negative day: 2026-01--5 (5 days before Jan 1)
+		const dayMatch = normalized.match(/^(\d{4})-(\d{1,2})-(-?\d+)$/);
+		if (dayMatch) {
+			const year = parseInt(dayMatch[1]);
+			const month = parseInt(dayMatch[2]);
+			const day = parseInt(dayMatch[3]);
+			if (year < 1900 || year > 2100) return null;
+			// Create date at start of month, then add days
+			date = moment([year, month - 1, 1]).add(day - 1, 'days');
+			if (date && date.isValid()) {
+				const resultYear = date.year();
+				if (resultYear < 1900 || resultYear > 2100) return null;
+				return date;
+			}
+		}
+
+		// Try period-specific formats
+		switch (period) {
+			case "weekly":
+				// ISO week: 2026-W03 or 2026-W-4 (negative = offset from start)
+				date = moment(normalized, "YYYY-[W]WW");
+				if (date && date.isValid()) {
+					const year = date.year();
+					if (year < 1900 || year > 2100) return null;
+					return date;
+				}
+				// Try with negative week: 2026-W-4
+				const weekMatch = normalized.match(/^(\d{4})-W(-?\d+)$/);
+				if (weekMatch) {
+					const year = parseInt(weekMatch[1]);
+					const week = parseInt(weekMatch[2]);
+					if (year < 1900 || year > 2100) return null;
+					// Create date at start of year, then add weeks
+					date = moment([year, 0, 1]).add(week - 1, 'weeks');
+					if (date && date.isValid()) {
+						const resultYear = date.year();
+						if (resultYear < 1900 || resultYear > 2100) return null;
+						return date;
+					}
+				}
+				break;
+
+			case "monthly":
+				// Year-month: 2026-03 or 2026--2 (negative = offset)
+				date = moment(normalized, "YYYY-MM");
+				if (date && date.isValid()) {
+					const year = date.year();
+					if (year < 1900 || year > 2100) return null;
+					return date;
+				}
+				// Try with negative month: 2026--2
+				const monthMatch = normalized.match(/^(\d{4})-(-?\d+)$/);
+				if (monthMatch && !normalized.includes("-W") && !normalized.includes("-Q")) {
+					const year = parseInt(monthMatch[1]);
+					const month = parseInt(monthMatch[2]);
+					if (year < 1900 || year > 2100) return null;
+					// Create date at start of year, then add months
+					date = moment([year, 0, 1]).add(month - 1, 'months');
+					if (date && date.isValid()) {
+						const resultYear = date.year();
+						if (resultYear < 1900 || resultYear > 2100) return null;
+						return date;
+					}
+				}
+				break;
+
+			case "quarterly":
+				// Year-quarter: 2026-Q1 or 2026-Q-1
+				const quarterMatch = normalized.match(/^(\d{4})-Q(-?\d+)$/);
+				if (quarterMatch) {
+					const year = parseInt(quarterMatch[1]);
+					const quarter = parseInt(quarterMatch[2]);
+					if (year < 1900 || year > 2100) return null;
+					// Allow negative quarters (relative offset)
+					// Create date at start of year, then add quarters
+					const month = (quarter - 1) * 3;
+					date = moment([year, 0, 1]).add(month, 'months');
+					if (date && date.isValid()) {
+						const resultYear = date.year();
+						if (resultYear < 1900 || resultYear > 2100) return null;
+						return date;
+					}
+				}
+				break;
+
+			case "yearly":
+				// Year: 2026
+				date = moment(normalized, "YYYY");
+				if (date && date.isValid()) {
+					const year = date.year();
+					if (year < 1900 || year > 2100) return null;
+					return date;
+				}
+				break;
+		}
+
+		return null;
+	}
+
+	// Get note for period and date
+	private getPeriodicNote(period: string, date: any): TFile | null {
+		const periodicNotes = this.getPeriodicNotes();
+		if (!periodicNotes) return null;
+
+		switch (period) {
+			case "daily":
+				const dailyNotes = periodicNotes.getAllDailyNotes();
+				return periodicNotes.getDailyNote(date, dailyNotes);
+			case "weekly":
+				const weeklyNotes = periodicNotes.getAllWeeklyNotes();
+				return periodicNotes.getWeeklyNote(date, weeklyNotes);
+			case "monthly":
+				const monthlyNotes = periodicNotes.getAllMonthlyNotes();
+				return periodicNotes.getMonthlyNote(date, monthlyNotes);
+			case "quarterly":
+				const quarterlyNotes = periodicNotes.getAllQuarterlyNotes();
+				return periodicNotes.getQuarterlyNote(date, quarterlyNotes);
+			case "yearly":
+				const yearlyNotes = periodicNotes.getAllYearlyNotes();
+				return periodicNotes.getYearlyNote(date, yearlyNotes);
+		}
+		return null;
+	}
+
+	// Create note for period and date
+	private async createPeriodicNote(
+		period: string,
+		date: any,
+		useTemplate: boolean
+	): Promise<TFile | null> {
+		const periodicNotes = this.getPeriodicNotes();
+		if (!periodicNotes) return null;
+
+		let file: TFile | null = null;
+
+		switch (period) {
+			case "daily":
+				file = await periodicNotes.createDailyNote(date);
+				break;
+			case "weekly":
+				file = await periodicNotes.createWeeklyNote(date);
+				break;
+			case "monthly":
+				file = await periodicNotes.createMonthlyNote(date);
+				break;
+			case "quarterly":
+				file = await periodicNotes.createQuarterlyNote(date);
+				break;
+			case "yearly":
+				file = await periodicNotes.createYearlyNote(date);
+				break;
+		}
+
+		if (file && !useTemplate) {
+			// For PUT, we want empty file, not template
+			// Clear the template content
+			await this.app.vault.adapter.write(file.path, "");
+		}
+
+		return file;
+	}
+
+	// Extract period and date from request path
+	private parsePath(req: any): {
+		period: string;
+		date: any;
+		requested: string;
+	} | null {
+		// Path: /periodic-note/daily/ or /periodic-note/daily/2024-01-15
+		const path = req.path;
+		if (!path) return null;
+		const parts = path.split("/").filter(Boolean);
+		// parts: ["periodic-note", "daily"] or ["periodic-note", "daily", "2024-01-15"]
+
+		if (parts.length < 2 || parts[0] !== "periodic-note") return null;
+
+		const period = this.parsePeriod(parts[1]);
+		if (!period) return null;
+
+		const moment = (window as any).moment;
+		let date: moment.Moment;
+		let requested: string;
+
+		if (parts.length === 2) {
+			// /periodic-note/daily/ → current period
+			date = moment();
+			requested = date.format("YYYY-MM-DD");
+		} else if (parts.length === 3) {
+			// /periodic-note/daily/2024-01-15 → specific date
+			requested = parts[2];
+			const parsed = this.parseDate(requested, period);
+			if (!parsed) return null;
+			date = parsed;
+		} else {
+			return null;
+		}
+
+		return { period, date, requested };
+	}
+
+	// Get or create note based on method
+	private async getOrCreateNote(
+		period: string,
+		date: any,
+		method: string
+	): Promise<[TFile | null, boolean]> {
+		// Returns [file, created]
+		let file = this.getPeriodicNote(period, date);
+		let created = false;
+
+		if (!file && ["PUT", "POST", "PATCH"].includes(method)) {
+			// Auto-create for write operations
+			const useTemplate = method !== "PUT"; // PUT creates empty, POST/PATCH use template
+			file = await this.createPeriodicNote(period, date, useTemplate);
+			created = true;
+
+			if (file) {
+				// Wait for metadata cache (like main API does)
+				const createdFile = file;
+				await new Promise<void>((resolve) => {
+					const interval = setInterval(() => {
+						const cache = this.app.metadataCache.getFileCache(createdFile);
+						if (cache) {
+							clearInterval(interval);
+							resolve();
+						}
+					}, 100);
+				});
+			}
+		}
+
+		return [file, created];
+	}
+
+	// Add hierarchical navigation headers
+	private addHierarchyLinks(res: any, period: string, date: any): void {
+		const moment = (window as any).moment;
+		const links: string[] = [];
+
+		// Current link for this period type
+		links.push(`</periodic-note/${period}/>; rel="current"`);
+
+		// Up links based on period
+		switch (period) {
+			case "daily":
+				// Week
+				const weekStr = date.format("YYYY-[W]WW");
+				links.push(`</periodic-note/weekly/${weekStr}>; rel="up"; title="week"`);
+				// Month
+				const monthStr = date.format("YYYY-MM");
+				links.push(`</periodic-note/monthly/${monthStr}>; rel="up"; title="month"`);
+				// Quarter
+				const quarter = Math.floor(date.month() / 3) + 1;
+				const quarterStr = `${date.format("YYYY")}-Q${quarter}`;
+				links.push(`</periodic-note/quarterly/${quarterStr}>; rel="up"; title="quarter"`);
+				// Year
+				const yearStr = date.format("YYYY");
+				links.push(`</periodic-note/yearly/${yearStr}>; rel="up"; title="year"`);
+				break;
+
+			case "weekly":
+				// Month
+				const weekMonthStr = date.format("YYYY-MM");
+				links.push(`</periodic-note/monthly/${weekMonthStr}>; rel="up"; title="month"`);
+				// Quarter
+				const weekQuarter = Math.floor(date.month() / 3) + 1;
+				const weekQuarterStr = `${date.format("YYYY")}-Q${weekQuarter}`;
+				links.push(`</periodic-note/quarterly/${weekQuarterStr}>; rel="up"; title="quarter"`);
+				// Year
+				const weekYearStr = date.format("YYYY");
+				links.push(`</periodic-note/yearly/${weekYearStr}>; rel="up"; title="year"`);
+				break;
+
+			case "monthly":
+				// Quarter
+				const monthQuarter = Math.floor(date.month() / 3) + 1;
+				const monthQuarterStr = `${date.format("YYYY")}-Q${monthQuarter}`;
+				links.push(`</periodic-note/quarterly/${monthQuarterStr}>; rel="up"; title="quarter"`);
+				// Year
+				const monthYearStr = date.format("YYYY");
+				links.push(`</periodic-note/yearly/${monthYearStr}>; rel="up"; title="year"`);
+				break;
+
+			case "quarterly":
+				// Year
+				const quarterYearStr = date.format("YYYY");
+				links.push(`</periodic-note/yearly/${quarterYearStr}>; rel="up"; title="year"`);
+				break;
+
+			case "yearly":
+				// No up links
+				break;
+		}
+
+		res.set("Link", links.join(", "));
+	}
+
+	// Main request handler (delegates to NoteHandler)
+	private async handleRequest(
+		req: any,
+		res: any,
+		method: "GET" | "PUT" | "POST" | "PATCH" | "DELETE"
+	): Promise<void> {
+		// Parse path
+		const parsed = this.parsePath(req);
+		if (!parsed) {
+			res.status(400).json({
+				message: "Invalid periodic note path or date format. Expected /periodic-note/{period}/ or /periodic-note/{period}/{date}",
+				errorCode: 40001,
+			});
+			return;
+		}
+
+		const { period, date, requested } = parsed;
+
+		// Check if Periodic Notes plugin is available
+		const periodicNotes = this.getPeriodicNotes();
+		if (!periodicNotes) {
+			res.status(400).json({
+				message: "Periodic Notes plugin is not enabled.",
+				errorCode: 40002,
+			});
+			return;
+		}
+
+		// Get or create note
+		const [file, created] = await this.getOrCreateNote(period, date, method);
+
+		if (!file) {
+			res.status(404).json({
+				message: `Periodic note for ${period} on ${date.format("YYYY-MM-DD")} does not exist.`,
+				errorCode: 40401,
+			});
+			return;
+		}
+
+		// Add hierarchy links
+		this.addHierarchyLinks(res, period, date);
+
+		// Store periodic info for NoteJson response
+		(req as any)._periodicInfo = {
+			period,
+			date: date.format("YYYY-MM-DD"),
+			requested,
+		};
+
+		// Modify request to look like a /note/* request
+		(req as any)._originalPath = req.path;
+		req.path = `/note/${file.basename}`;
+
+		// Delegate to NoteHandler
+		switch (method) {
+			case "GET":
+				return this.noteHandler.handleGet(req, res);
+			case "PUT":
+				return this.noteHandler.handlePut(req, res);
+			case "POST":
+				return this.noteHandler.handlePost(req, res);
+			case "PATCH":
+				return this.noteHandler.handlePatch(req, res);
+			case "DELETE":
+				return this.noteHandler.handleDelete(req, res);
+		}
+	}
+
+	// Public handlers
+	async handleGet(req: any, res: any): Promise<void> {
+		return this.handleRequest(req, res, "GET");
+	}
+
+	async handlePut(req: any, res: any): Promise<void> {
+		return this.handleRequest(req, res, "PUT");
+	}
+
+	async handlePost(req: any, res: any): Promise<void> {
+		return this.handleRequest(req, res, "POST");
+	}
+
+	async handlePatch(req: any, res: any): Promise<void> {
+		return this.handleRequest(req, res, "PATCH");
+	}
+
+	async handleDelete(req: any, res: any): Promise<void> {
+		return this.handleRequest(req, res, "DELETE");
+	}
+}
+
 // --- Plugin ---
 
 export default class NoteApiExtensionPlugin extends Plugin {
@@ -697,6 +1149,7 @@ export default class NoteApiExtensionPlugin extends Plugin {
 	registerRoutes() {
 		this.api = getAPI(this.app, this.manifest);
 		const handler = new NoteHandler(this.app);
+		const periodicHandler = new PeriodicNoteHandler(this.app, handler);
 
 		this.api
 			.addRoute("/note/*")
@@ -705,6 +1158,14 @@ export default class NoteApiExtensionPlugin extends Plugin {
 			.post(asyncHandler(handler.handlePost.bind(handler)))
 			.patch(asyncHandler(handler.handlePatch.bind(handler)))
 			.delete(asyncHandler(handler.handleDelete.bind(handler)));
+
+		this.api
+			.addRoute("/periodic-note/*")
+			.get(asyncHandler(periodicHandler.handleGet.bind(periodicHandler)))
+			.put(asyncHandler(periodicHandler.handlePut.bind(periodicHandler)))
+			.post(asyncHandler(periodicHandler.handlePost.bind(periodicHandler)))
+			.patch(asyncHandler(periodicHandler.handlePatch.bind(periodicHandler)))
+			.delete(asyncHandler(periodicHandler.handleDelete.bind(periodicHandler)));
 
 		this.api
 			.addRoute("/note-move/")
@@ -742,6 +1203,7 @@ declare module "obsidian" {
 	interface App {
 		plugins: {
 			enabledPlugins: Set<string>;
+			plugins: Record<string, any>;
 		};
 	}
 	interface MetadataCache {
@@ -759,4 +1221,4 @@ declare module "obsidian" {
 	}
 }
 
-export { AliasCache, NoteHandler, asyncHandler, CONTENT_TYPE_MARKDOWN, CONTENT_TYPE_NOTE_JSON, CONTENT_TYPE_DOCUMENT_MAP };
+export { AliasCache, NoteHandler, PeriodicNoteHandler, asyncHandler, CONTENT_TYPE_MARKDOWN, CONTENT_TYPE_NOTE_JSON, CONTENT_TYPE_DOCUMENT_MAP };
