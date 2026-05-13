@@ -103,6 +103,7 @@ export function createMockApp() {
 		},
 		plugins: {
 			enabledPlugins: new Set<string>(),
+			plugins: {},
 		},
 	};
 }
