@@ -24,6 +24,43 @@ export class Plugin {
 	manifest: any;
 
 	registerEvent(_ref: EventRef): void {}
+	onunload(): void {}
+	addSettingTab(_tab: any): void {}
+	async loadData(): Promise<any> { return {}; }
+	async saveData(_data: any): Promise<void> {}
+}
+
+export class PluginSettingTab {
+	app: any;
+	plugin: any;
+	containerEl: any;
+
+	constructor(app: any, plugin: any) {
+		this.app = app;
+		this.plugin = plugin;
+		this.containerEl = {
+			empty: () => {},
+			createEl: () => ({ createEl: () => ({}), appendChild: () => {} }),
+		};
+	}
+
+	display(): void {}
+	hide(): void {}
+}
+
+export class Setting {
+	constructor(containerEl: any) {}
+	setName(name: string): this { return this; }
+	setDesc(desc: string): this { return this; }
+	addSlider(cb: (slider: any) => void): this {
+		cb({
+			setLimits: () => this,
+			setValue: () => this,
+			setDynamicTooltip: () => this,
+			onChange: () => this,
+		});
+		return this;
+	}
 }
 
 export function parseFrontMatterAliases(
@@ -103,6 +140,7 @@ export function createMockApp() {
 		},
 		plugins: {
 			enabledPlugins: new Set<string>(),
+			plugins: {},
 		},
 	};
 }

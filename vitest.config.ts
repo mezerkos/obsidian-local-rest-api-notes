@@ -14,6 +14,10 @@ export default defineConfig({
 				__dirname,
 				"mocks/obsidian-local-rest-api.ts"
 			),
+			"obsidian-daily-notes-interface": resolve(
+				__dirname,
+				"mocks/obsidian-daily-notes-interface.ts"
+			),
 		},
 	},
 	plugins: [
