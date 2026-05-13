@@ -100,14 +100,16 @@ describe("NoteApiExtensionPlugin", () => {
 			let yamlHandler: any = null;
 			
 			// Try each get handler to find the yaml one
-			for (let i = 0; i < getCalls.length; i++) {
-				const handler = getCalls[i][0];
-				const mockRes: any = {
-					set: vi.fn().mockReturnThis(),
-					send: vi.fn().mockReturnThis(),
-				};
-				try {
-					handler({}, mockRes);
+				for (let i = 0; i < getCalls.length; i++) {
+					const handler = getCalls[i][0];
+					const mockRes: any = {
+						set: vi.fn().mockReturnThis(),
+						send: vi.fn().mockReturnThis(),
+						status: vi.fn().mockReturnThis(),
+						json: vi.fn().mockReturnThis(),
+					};
+					try {
+						handler({ path: "/notes-openapi.yaml" }, mockRes);
 					// If it succeeds and sets content-type to yaml, it's the yaml handler
 					if (mockRes.set.mock.calls.some((call: any[]) => 
 						call[0] === "Content-Type" && call[1] === "text/yaml; charset=utf-8"
@@ -120,13 +122,15 @@ describe("NoteApiExtensionPlugin", () => {
 				}
 			}
 
-			expect(yamlHandler).toBeDefined();
+				expect(yamlHandler).toBeDefined();
 
-			const mockRes: any = {
-				set: vi.fn().mockReturnThis(),
-				send: vi.fn().mockReturnThis(),
-			};
-			yamlHandler({}, mockRes);
+				const mockRes: any = {
+					set: vi.fn().mockReturnThis(),
+					send: vi.fn().mockReturnThis(),
+					status: vi.fn().mockReturnThis(),
+					json: vi.fn().mockReturnThis(),
+				};
+				yamlHandler({ path: "/notes-openapi.yaml" }, mockRes);
 
 			expect(mockRes.set).toHaveBeenCalledWith(
 				"Content-Type",
