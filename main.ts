@@ -1,6 +1,8 @@
 import {
 	parseFrontMatterAliases,
 	Plugin,
+	PluginSettingTab,
+	Setting,
 	prepareSimpleSearch,
 	TFile,
 } from "obsidian";
@@ -41,6 +43,10 @@ import {
 	createYearlyNote,
 	appHasDailyNotesPluginLoaded,
 } from "obsidian-daily-notes-interface";
+
+// --- Configuration ---
+// MAX_REPLACE_RATIO is now configurable via plugin settings
+// See NoteApiExtensionSettings interface and NoteApiExtensionSettingTab class
 
 // --- Async handler wrapper (Express doesn't catch async rejections) ---
 
@@ -150,10 +156,12 @@ class AliasCache {
 class NoteHandler {
 	private app: Plugin["app"];
 	private aliases: AliasCache;
+	private getSettings: () => NoteApiExtensionSettings;
 
-	constructor(app: Plugin["app"]) {
+	constructor(app: Plugin["app"], getSettings: () => NoteApiExtensionSettings) {
 		this.app = app;
 		this.aliases = new AliasCache(app);
+		this.getSettings = getSettings;
 	}
 
 	private resolveNote(name: string): TFile | null {
@@ -480,9 +488,49 @@ class NoteHandler {
 			return;
 		}
 
-		const fileContents = await this.app.vault.read(file);
+			const fileContents = await this.app.vault.read(file);
 
-		const instruction: PatchInstruction = {
+			// Safety check: prevent accidental replacement of large sections
+			// particularly H1 headings that may contain most of the document
+			if (operation === "replace" && targetType === "heading") {
+				const confirmDangerous = req.get("X-Confirm-Dangerous-Operation") === "true";
+				
+				// Check if this is a top-level heading (H1) or single heading
+				const isTopLevelHeading = Array.isArray(target) && target.length === 1;
+				
+				if (isTopLevelHeading && !confirmDangerous) {
+					// Get document structure to check section size
+					const { getDocumentMap } = await import("markdown-patch");
+					const docMap = getDocumentMap(fileContents);
+					const headingKey = target[0];
+					const headingInfo = (docMap as any).heading?.[headingKey];
+					
+						const maxReplaceRatio = this.getSettings().maxReplaceRatio;
+						if (headingInfo && maxReplaceRatio > 0 && maxReplaceRatio < 1.0) {
+							const sectionLength = headingInfo.content.end - headingInfo.content.start;
+							const totalLength = fileContents.length;
+							const sectionRatio = sectionLength / totalLength;
+							
+							// If replacing more than maxReplaceRatio of the document, require confirmation
+							if (sectionRatio > maxReplaceRatio) {
+								res.status(400).json({
+									message: `Replace operation on heading "${headingKey}" would affect ${Math.round(sectionRatio * 100)}% of the document (threshold: ${Math.round(maxReplaceRatio * 100)}%). This is a potentially destructive operation. To proceed, add header: X-Confirm-Dangerous-Operation: true`,
+									errorCode: 40081,
+									details: {
+										heading: headingKey,
+										sectionSize: sectionLength,
+										totalSize: totalLength,
+										percentage: Math.round(sectionRatio * 100),
+										threshold: Math.round(maxReplaceRatio * 100),
+									}
+								});
+								return;
+							}
+						}
+				}
+			}
+
+			const instruction: PatchInstruction = {
 			operation: operation as PatchOperation,
 			targetType: targetType as PatchTargetType,
 			target,
@@ -1005,14 +1053,25 @@ class PeriodicNoteHandler {
 	}
 }
 
+// --- Plugin Settings ---
+
+interface NoteApiExtensionSettings {
+	maxReplaceRatio: number;
+}
+
+const DEFAULT_SETTINGS: NoteApiExtensionSettings = {
+	maxReplaceRatio: 0.5,
+};
+
 // --- Plugin ---
 
 export default class NoteApiExtensionPlugin extends Plugin {
 	private api: LocalRestApiPublicApi;
+	settings: NoteApiExtensionSettings;
 
 	registerRoutes() {
 		this.api = getAPI(this.app, this.manifest);
-		const handler = new NoteHandler(this.app);
+		const handler = new NoteHandler(this.app, () => this.settings);
 		const periodicHandler = new PeriodicNoteHandler(this.app, handler);
 
 		this.api
@@ -1044,6 +1103,8 @@ export default class NoteApiExtensionPlugin extends Plugin {
 	}
 
 	async onload() {
+		await this.loadSettings();
+
 		if (this.app.plugins.enabledPlugins.has("obsidian-local-rest-api")) {
 			this.registerRoutes();
 		}
@@ -1054,12 +1115,71 @@ export default class NoteApiExtensionPlugin extends Plugin {
 				this.registerRoutes.bind(this)
 			)
 		);
+
+		// Add settings tab
+		this.addSettingTab(new NoteApiExtensionSettingTab(this.app, this));
+	}
+
+	async loadSettings() {
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+	}
+
+	async saveSettings() {
+		await this.saveData(this.settings);
 	}
 
 	onunload() {
 		if (this.api) {
 			this.api.unregister();
 		}
+	}
+}
+
+class NoteApiExtensionSettingTab extends PluginSettingTab {
+	plugin: NoteApiExtensionPlugin;
+
+	constructor(app: any, plugin: NoteApiExtensionPlugin) {
+		super(app, plugin);
+		this.plugin = plugin;
+	}
+
+	display(): void {
+		const { containerEl } = this;
+
+		containerEl.empty();
+
+		containerEl.createEl("h2", { text: "Local REST API Note Extension Settings" });
+
+		new Setting(containerEl)
+			.setName("PATCH replace protection threshold")
+			.setDesc("Maximum percentage of a document that can be replaced via PATCH without confirmation. When replacing a top-level heading (H1) that would affect more than this percentage, the operation requires the X-Confirm-Dangerous-Operation: true header. Set to 0 to disable protection, 1.0 to allow any size.")
+			.addSlider(slider => slider
+				.setLimits(0, 1.0, 0.05)
+				.setValue(this.plugin.settings.maxReplaceRatio)
+				.setDynamicTooltip()
+				.onChange(async (value) => {
+					this.plugin.settings.maxReplaceRatio = value;
+					await this.plugin.saveSettings();
+				}));
+
+		containerEl.createEl("p", {
+			text: `Current threshold: ${Math.round(this.plugin.settings.maxReplaceRatio * 100)}%`,
+			cls: "setting-item-description"
+		});
+
+		containerEl.createEl("h3", { text: "About PATCH Protection" });
+		containerEl.createEl("p", {
+			text: "The PATCH endpoint allows replacing sections of notes by heading. Replacing an H1 heading that contains most of your document can accidentally delete large amounts of content. This protection blocks such operations unless you explicitly confirm them with the X-Confirm-Dangerous-Operation header."
+		});
+
+		containerEl.createEl("p", {
+			text: "Examples:",
+			cls: "setting-item-description"
+		});
+		const examplesList = containerEl.createEl("ul", { cls: "setting-item-description" });
+		examplesList.createEl("li", { text: "0% (0.0) - Disables protection entirely" });
+		examplesList.createEl("li", { text: "50% (0.5) - Default - Blocks replacing sections larger than half the document" });
+		examplesList.createEl("li", { text: "100% (1.0) - Allows any size (effectively disables protection)" });
 	}
 }
 
