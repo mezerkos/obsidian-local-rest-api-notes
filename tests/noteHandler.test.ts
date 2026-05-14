@@ -1082,6 +1082,132 @@ describe("NoteHandler", () => {
 		});
 	});
 
+	// --- Inlinks / Outlinks ---
+	describe("inlinks and outlinks in NoteJson", () => {
+		it("includes outlinks sorted by mtime descending", async () => {
+			const file = new TFile("notes/Test.md");
+			const dest1 = new TFile("notes/Old.md");
+			dest1.stat.mtime = 1000;
+			const dest2 = new TFile("notes/New.md");
+			dest2.stat.mtime = 3000;
+			const dest3 = new TFile("notes/Mid.md");
+			dest3.stat.mtime = 2000;
+
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.metadataCache.resolvedLinks = {
+				"notes/Test.md": {
+					"notes/Old.md": 1,
+					"notes/New.md": 1,
+					"notes/Mid.md": 1,
+				},
+			};
+			app.vault.getAbstractFileByPath.mockImplementation((p: string) => {
+				if (p === "notes/Old.md") return dest1;
+				if (p === "notes/New.md") return dest2;
+				if (p === "notes/Mid.md") return dest3;
+				return null;
+			});
+			app.metadataCache.getFileCache.mockReturnValue({ frontmatter: {} });
+			app.vault.cachedRead.mockResolvedValue("content");
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: { accept: "application/vnd.olrapi.note+json" },
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			const body = JSON.parse(res._body);
+			expect(body.outlinks.total).toBe(3);
+			expect(body.outlinks.links[0].display).toBe("New");
+			expect(body.outlinks.links[1].display).toBe("Mid");
+			expect(body.outlinks.links[2].display).toBe("Old");
+		});
+
+		it("includes inlinks sorted by mtime descending", async () => {
+			const file = new TFile("notes/Target.md");
+			const src1 = new TFile("notes/RecentLinker.md");
+			src1.stat.mtime = 5000;
+			const src2 = new TFile("notes/OldLinker.md");
+			src2.stat.mtime = 1000;
+
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.metadataCache.resolvedLinks = {
+				"notes/RecentLinker.md": { "notes/Target.md": 1 },
+				"notes/OldLinker.md": { "notes/Target.md": 2 },
+				"notes/Unrelated.md": { "notes/Other.md": 1 },
+			};
+			app.vault.getAbstractFileByPath.mockImplementation((p: string) => {
+				if (p === "notes/RecentLinker.md") return src1;
+				if (p === "notes/OldLinker.md") return src2;
+				return null;
+			});
+			app.metadataCache.getFileCache.mockReturnValue({ frontmatter: {} });
+			app.vault.cachedRead.mockResolvedValue("content");
+
+			const req = createMockReq({
+				path: "/note/Target",
+				headers: { accept: "application/vnd.olrapi.note+json" },
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			const body = JSON.parse(res._body);
+			expect(body.inlinks.total).toBe(2);
+			expect(body.inlinks.links[0].display).toBe("RecentLinker");
+			expect(body.inlinks.links[1].display).toBe("OldLinker");
+		});
+
+		it("caps links at 25", async () => {
+			const file = new TFile("notes/Hub.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+
+			const outTargets: Record<string, number> = {};
+			for (let i = 0; i < 30; i++) {
+				outTargets[`notes/Out${i}.md`] = 1;
+			}
+			app.metadataCache.resolvedLinks = { "notes/Hub.md": outTargets };
+
+			app.vault.getAbstractFileByPath.mockImplementation((p: string) => {
+				const f = new TFile(p);
+				f.stat.mtime = parseInt(p.match(/\d+/)?.[0] ?? "0") * 100;
+				return f;
+			});
+			app.metadataCache.getFileCache.mockReturnValue({ frontmatter: {} });
+			app.vault.cachedRead.mockResolvedValue("content");
+
+			const req = createMockReq({
+				path: "/note/Hub",
+				headers: { accept: "application/vnd.olrapi.note+json" },
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			const body = JSON.parse(res._body);
+			expect(body.outlinks.total).toBe(30);
+			expect(body.outlinks.links).toHaveLength(25);
+		});
+
+		it("returns empty links when no resolved links exist", async () => {
+			const file = new TFile("notes/Isolated.md");
+			app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+			app.metadataCache.resolvedLinks = {};
+			app.metadataCache.getFileCache.mockReturnValue({ frontmatter: {} });
+			app.vault.cachedRead.mockResolvedValue("content");
+
+			const req = createMockReq({
+				path: "/note/Isolated",
+				headers: { accept: "application/vnd.olrapi.note+json" },
+			});
+			const res = createMockRes();
+			await handler.handleGet(req, res);
+
+			const body = JSON.parse(res._body);
+			expect(body.inlinks).toEqual({ total: 0, links: [] });
+			expect(body.outlinks).toEqual({ total: 0, links: [] });
+		});
+	});
+
 	// --- Move ---
 	describe("handleMove", () => {
 		it("renames file and returns new path", async () => {

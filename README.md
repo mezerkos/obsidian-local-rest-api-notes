@@ -18,9 +18,9 @@ Copy or symlink `main.js` and `manifest.json` into your vault's `.obsidian/plugi
 | `/note/*` | GET, PUT, POST, PATCH, DELETE | Read, overwrite, append, patch, or delete a note by wiki-link name |
 | `/periodic-note/*` | GET, PUT, POST, PATCH, DELETE | Read, write, or patch periodic notes (daily, weekly, monthly, quarterly, yearly) |
 | `/note-move/` | POST | Move/rename a note (updates backlinks) |
-| `/note-api.yaml` | GET | OpenAPI spec for these endpoints |
+| `/notes-openapi.yaml` | GET | OpenAPI spec for these endpoints |
 
-The full OpenAPI specification is served at `/note-api.yaml` when the plugin is running.
+The full OpenAPI specification is served at `/notes-openapi.yaml` when the plugin is running.
 
 ## Periodic Notes API
 

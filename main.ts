@@ -388,11 +388,43 @@ class NoteHandler {
 			.map((tag: any) => tag.toString().replace(/^#/, ""))
 			.filter((value: string, index: number, self: string[]) => self.indexOf(value) === index);
 
+		// Outlinks: resolved links from this file, sorted by mtime desc, capped at 25
+		const MAX_LINKS = 25;
+		const resolvedOut = this.app.metadataCache.resolvedLinks[file.path] ?? {};
+		const allOutlinks = Object.keys(resolvedOut).map((destPath) => {
+			const destFile = this.app.vault.getAbstractFileByPath(destPath);
+			return {
+				path: destPath,
+				display: destFile instanceof TFile ? destFile.basename : destPath,
+				mtime: destFile instanceof TFile ? destFile.stat.mtime : 0,
+			};
+		});
+		allOutlinks.sort((a, b) => b.mtime - a.mtime);
+		const outlinks = allOutlinks.slice(0, MAX_LINKS).map(({ path, display }) => ({ path, display }));
+
+		// Inlinks: files that link to this file, sorted by mtime desc, capped at 25
+		const allInlinks: { path: string; display: string; mtime: number }[] = [];
+		const allResolved = this.app.metadataCache.resolvedLinks;
+		for (const sourcePath of Object.keys(allResolved)) {
+			if (file.path in allResolved[sourcePath]) {
+				const sourceFile = this.app.vault.getAbstractFileByPath(sourcePath);
+				allInlinks.push({
+					path: sourcePath,
+					display: sourceFile instanceof TFile ? sourceFile.basename : sourcePath,
+					mtime: sourceFile instanceof TFile ? sourceFile.stat.mtime : 0,
+				});
+			}
+		}
+		allInlinks.sort((a, b) => b.mtime - a.mtime);
+		const inlinks = allInlinks.slice(0, MAX_LINKS).map(({ path, display }) => ({ path, display }));
+
 		const metadata: Record<string, unknown> = {
 			tags,
 			frontmatter,
 			stat: file.stat,
 			path: file.path,
+			inlinks: { total: allInlinks.length, links: inlinks },
+			outlinks: { total: allOutlinks.length, links: outlinks },
 			content: await this.app.vault.cachedRead(file),
 		};
 
@@ -1351,6 +1383,7 @@ declare module "obsidian" {
 			linkpath: string,
 			sourcePath: string
 		): TFile | null;
+		resolvedLinks: Record<string, Record<string, number>>;
 	}
 	interface Workspace {
 		on(
