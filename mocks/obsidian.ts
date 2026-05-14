@@ -93,6 +93,7 @@ export function createMockApp() {
 	return {
 		vault: {
 			getMarkdownFiles: vi.fn(() => []),
+			getAbstractFileByPath: vi.fn((_path: string) => null),
 			read: vi.fn(async () => ""),
 			cachedRead: vi.fn(async () => ""),
 			adapter: {
@@ -116,6 +117,7 @@ export function createMockApp() {
 		metadataCache: {
 			getFileCache: vi.fn(() => null),
 			getFirstLinkpathDest: vi.fn(() => null),
+			resolvedLinks: {} as Record<string, Record<string, number>>,
 			on: vi.fn((event: string, cb: Function) => {
 				if (!metadataCacheCallbacks[event])
 					metadataCacheCallbacks[event] = [];
