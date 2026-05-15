@@ -111,8 +111,30 @@ describe("PATCH safety checks", () => {
 			expect(mockApplyPatch).toHaveBeenCalled();
 		});
 
-		it("allows replace on nested headings without restriction", async () => {
-			const content = "# Main\n\n## Subsection\n\nContent here.";
+		it("blocks replace on nested heading that would affect >50% of document", async () => {
+			const content = "# Main\n\n## Subsection\n\n" + "Nested content. ".repeat(100) + "\n\n## Tiny\n\nSmall.";
+			app.vault.read.mockResolvedValue(content);
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: {
+					Operation: "replace",
+					"Target-Type": "heading",
+					Target: "Main::Subsection",
+				},
+				body: "New content",
+			});
+			const res = createMockRes();
+			await handler.handlePatch(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(400);
+			expect(res._jsonBody.errorCode).toBe(40081);
+			expect(res._jsonBody.details.heading).toBe("Main::Subsection");
+			expect(mockApplyPatch).not.toHaveBeenCalled();
+		});
+
+		it("allows replace on nested heading that affects <50% of document", async () => {
+			const content = "# Main\n\n" + "Top content. ".repeat(100) + "\n\n## Subsection\n\nSmall nested content.\n\n## Other\n\n" + "More content. ".repeat(100);
 			app.vault.read.mockResolvedValue(content);
 			mockApplyPatch.mockReturnValue("patched content");
 
@@ -128,7 +150,6 @@ describe("PATCH safety checks", () => {
 			const res = createMockRes();
 			await handler.handlePatch(req, res);
 
-			// Should succeed (nested heading, not top-level)
 			expect(res.status).toHaveBeenCalledWith(200);
 			expect(mockApplyPatch).toHaveBeenCalled();
 		});

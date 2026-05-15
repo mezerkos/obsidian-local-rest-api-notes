@@ -679,42 +679,37 @@ class NoteHandler {
 			const fileContents = await this.app.vault.read(file);
 
 			// Safety check: prevent accidental replacement of large sections
-			// particularly H1 headings that may contain most of the document
 			if (operation === "replace" && targetType === "heading") {
 				const confirmDangerous = req.get("X-Confirm-Dangerous-Operation") === "true";
-				
-				// Check if this is a top-level heading (H1) or single heading
-				const isTopLevelHeading = Array.isArray(target) && target.length === 1;
-				
-				if (isTopLevelHeading && !confirmDangerous) {
-					// Get document structure to check section size
+
+				if (!confirmDangerous && Array.isArray(target) && target.length > 0) {
 					const { getDocumentMap } = await import("markdown-patch");
 					const docMap = getDocumentMap(fileContents);
-					const headingKey = target[0];
-					const headingInfo = (docMap as any).heading?.[headingKey];
-					
-						const maxReplaceRatio = this.getSettings().maxReplaceRatio;
-						if (headingInfo && maxReplaceRatio > 0 && maxReplaceRatio < 1.0) {
-							const sectionLength = headingInfo.content.end - headingInfo.content.start;
-							const totalLength = fileContents.length;
-							const sectionRatio = sectionLength / totalLength;
-							
-							// If replacing more than maxReplaceRatio of the document, require confirmation
-							if (sectionRatio > maxReplaceRatio) {
-								res.status(400).json({
-									message: `Replace operation on heading "${headingKey}" would affect ${Math.round(sectionRatio * 100)}% of the document (threshold: ${Math.round(maxReplaceRatio * 100)}%). This is a potentially destructive operation. To proceed, add header: X-Confirm-Dangerous-Operation: true`,
-									errorCode: 40081,
-									details: {
-										heading: headingKey,
-										sectionSize: sectionLength,
-										totalSize: totalLength,
-										percentage: Math.round(sectionRatio * 100),
-										threshold: Math.round(maxReplaceRatio * 100),
-									}
-								});
-								return;
-							}
+					const headingKey = target.join("");
+					const headingInfo = this.resolveHeadingEntry((docMap as any).heading ?? {}, headingKey);
+
+					const maxReplaceRatio = this.getSettings().maxReplaceRatio;
+					if (headingInfo && maxReplaceRatio > 0 && maxReplaceRatio < 1.0) {
+						const sectionLength = headingInfo.content.end - headingInfo.content.start;
+						const totalLength = fileContents.length;
+						const sectionRatio = sectionLength / totalLength;
+
+						if (sectionRatio > maxReplaceRatio) {
+							const displayTarget = target.join("::");
+							res.status(400).json({
+								message: `Replace operation on heading "${displayTarget}" would affect ${Math.round(sectionRatio * 100)}% of the document (threshold: ${Math.round(maxReplaceRatio * 100)}%). This is a potentially destructive operation. To proceed, add header: X-Confirm-Dangerous-Operation: true`,
+								errorCode: 40081,
+								details: {
+									heading: displayTarget,
+									sectionSize: sectionLength,
+									totalSize: totalLength,
+									percentage: Math.round(sectionRatio * 100),
+									threshold: Math.round(maxReplaceRatio * 100),
+								}
+							});
+							return;
 						}
+					}
 				}
 			}
 
