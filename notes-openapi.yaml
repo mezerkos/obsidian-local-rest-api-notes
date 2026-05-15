@@ -216,6 +216,74 @@ components:
               type: "string"
               description: "The date requested by the client (may differ from date if normalization occurred)."
               example: "2026-02-31"
+    ReplaceProtectionError:
+      type: "object"
+      required:
+        - "message"
+        - "errorCode"
+        - "details"
+        - "currentContent"
+      properties:
+        message:
+          type: "string"
+          description: "Human-readable error message explaining the protection trigger."
+        errorCode:
+          type: "number"
+          description: "40081 for PATCH heading replace, 40082 for PUT overwrite."
+          enum:
+            - 40081
+            - 40082
+        details:
+          type: "object"
+          description: "Contextual details about the protection trigger."
+          properties:
+            heading:
+              type: "string"
+              description: "The target heading path (PATCH only)."
+            sectionSize:
+              type: "number"
+              description: "Size of the section in characters (PATCH only)."
+            totalSize:
+              type: "number"
+              description: "Total document size in characters (PATCH only)."
+            existingSize:
+              type: "number"
+              description: "Existing file size in characters (PUT only)."
+            newSize:
+              type: "number"
+              description: "New content size in characters (PUT only)."
+            percentage:
+              type: "number"
+              description: "Ratio that triggered the protection."
+            threshold:
+              type: "number"
+              description: "Configured threshold percentage (PATCH only)."
+        currentContent:
+          type: "string"
+          description: "The full content that would be replaced. For PATCH, this is the heading section content. For PUT, this is the entire file."
+    ReplaceSnapshot:
+      type: "object"
+      required:
+        - "filePath"
+        - "heading"
+        - "content"
+        - "timestamp"
+      properties:
+        filePath:
+          type: "string"
+          description: "Vault-relative path of the file."
+          example: "Intakes/Dailies/2026.05.14.md"
+        heading:
+          type: "string"
+          description: "The heading path that was replaced, or '(full file)' for PUT overwrites."
+          example: "Daily Note - 2026.05.14::Activity Log"
+        content:
+          type: "string"
+          description: "The original content before the replace."
+        timestamp:
+          type: "string"
+          format: "date-time"
+          description: "ISO 8601 timestamp of when the snapshot was taken."
     MoveRequest:
       type: "object"
       required:
@@ -331,6 +399,21 @@ paths:
       description: |
         Overwrites the content of an existing note resolved by wiki-link name.
         Accepts `text/markdown` or binary content.
+
+        **Overwrite protection:** If the new content is significantly smaller than the
+        existing file (below the configured threshold, default 50%), the operation is
+        blocked with error 40082. The response includes the full existing file content
+        in `currentContent`. To proceed, add the `X-Confirm-Dangerous-Operation: true`
+        header — the original content is snapshotted before overwriting.
+      parameters:
+        - name: "X-Confirm-Dangerous-Operation"
+          in: "header"
+          required: false
+          description: "Set to `true` to bypass overwrite protection. The original content is snapshotted before the write proceeds."
+          schema:
+            type: "string"
+            enum:
+              - "true"
       requestBody:
         content:
           text/markdown:
@@ -349,16 +432,18 @@ paths:
               schema:
                 type: "string"
         "400":
-          description: "Invalid request body"
+          description: "Invalid request body or overwrite protection triggered (errorCode 40082)"
           content:
             application/json:
               schema:
-                type: "object"
-                properties:
-                  message:
-                    type: "string"
-                  errorCode:
-                    type: "number"
+                oneOf:
+                  - $ref: "#/components/schemas/ReplaceProtectionError"
+                  - type: "object"
+                    properties:
+                      message:
+                        type: "string"
+                      errorCode:
+                        type: "number"
         "300":
           description: "Ambiguous — multiple notes match"
           content:
@@ -422,7 +507,25 @@ paths:
       description: |
         Applies a structured patch to a note using `Target-Type`, `Operation`, and `Target` headers.
         Supports append/prepend/replace on headings, blocks, and frontmatter fields.
+
+        **Replace protection:** When `Operation: replace` targets a heading whose content
+        exceeds the configured threshold (default 50% of the document), the operation is
+        blocked with error 40081. This applies to headings at any nesting depth. The response
+        includes the full section content in `currentContent`. To proceed, add the
+        `X-Confirm-Dangerous-Operation: true` header — the original content is snapshotted
+        before the replace proceeds.
+
+        On any patch failure (error 40080), if the target heading exists, the response
+        also includes `currentContent` with the current section content.
       parameters:
+        - name: "X-Confirm-Dangerous-Operation"
+          in: "header"
+          required: false
+          description: "Set to `true` to bypass replace protection for large heading sections. The original content is snapshotted before the replace proceeds."
+          schema:
+            type: "string"
+            enum:
+              - "true"
         - name: "Operation"
           in: "header"
           required: true
@@ -491,16 +594,21 @@ paths:
               schema:
                 type: "string"
         "400":
-          description: "Invalid patch parameters or patch failed"
+          description: "Invalid patch parameters, replace protection triggered (40081), or patch failed (40080). Both 40081 and 40080 may include `currentContent` with the current heading section content."
           content:
             application/json:
               schema:
-                type: "object"
-                properties:
-                  message:
-                    type: "string"
-                  errorCode:
-                    type: "number"
+                oneOf:
+                  - $ref: "#/components/schemas/ReplaceProtectionError"
+                  - type: "object"
+                    properties:
+                      message:
+                        type: "string"
+                      errorCode:
+                        type: "number"
+                      currentContent:
+                        type: "string"
+                        description: "Current heading section content (included when the target heading exists)."
         "300":
           description: "Ambiguous — multiple notes match"
           content:
@@ -949,3 +1057,74 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/NoteNotFoundError"
+  /note-snapshots/:
+    get:
+      tags:
+        - "Snapshot"
+      summary: "List all replace snapshots"
+      description: |
+        Returns all in-memory replace snapshots, stored when a confirmed dangerous
+        replace (PATCH or PUT) overwrites content. Snapshots are capped at the
+        configured maximum (default 20) with oldest evicted first.
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                type: "array"
+                items:
+                  $ref: "#/components/schemas/ReplaceSnapshot"
+  /note-snapshot/{notePath}:
+    parameters:
+      - name: "notePath"
+        in: "path"
+        required: true
+        description: "Vault-relative file path (e.g. `Intakes/Dailies/2026.05.14.md`)."
+        schema:
+          type: "string"
+    get:
+      tags:
+        - "Snapshot"
+      summary: "Get a specific replace snapshot"
+      description: |
+        Retrieves a specific snapshot by file path and heading target.
+        Use `Target: (full file)` for PUT overwrite snapshots.
+      parameters:
+        - name: "Target"
+          in: "header"
+          required: true
+          description: "The heading path used in the original replace, or `(full file)` for PUT overwrites."
+          schema:
+            type: "string"
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplaceSnapshot"
+        "400":
+          description: "Missing Target header"
+          content:
+            application/json:
+              schema:
+                type: "object"
+                properties:
+                  message:
+                    type: "string"
+                  errorCode:
+                    type: "number"
+                    example: 40090
+        "404":
+          description: "No snapshot found for the specified file and heading"
+          content:
+            application/json:
+              schema:
+                type: "object"
+                properties:
+                  message:
+                    type: "string"
+                  errorCode:
+                    type: "number"
+                    example: 40491

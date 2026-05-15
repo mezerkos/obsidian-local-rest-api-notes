@@ -57,15 +57,15 @@ describe("PATCH safety checks", () => {
 			const res = createMockRes();
 			await handler.handlePatch(req, res);
 
-			// Should be blocked with error 40081
 			expect(res.status).toHaveBeenCalledWith(400);
 			expect(res._jsonBody.errorCode).toBe(40081);
 			expect(res._jsonBody.message).toContain("would affect");
 			expect(res._jsonBody.message).toContain("X-Confirm-Dangerous-Operation");
+			expect(res._jsonBody.currentContent).toContain("This is a long section.");
 			expect(mockApplyPatch).not.toHaveBeenCalled();
 		});
 
-		it("allows replace on H1 with confirmation header", async () => {
+		it("allows replace on H1 with confirmation header and stores snapshot", async () => {
 			const content = "# Main Title\n\n" + "Content. ".repeat(100);
 			app.vault.read.mockResolvedValue(content);
 			mockApplyPatch.mockReturnValue("patched content");
@@ -83,9 +83,14 @@ describe("PATCH safety checks", () => {
 			const res = createMockRes();
 			await handler.handlePatch(req, res);
 
-			// Should succeed with confirmation
 			expect(res.status).toHaveBeenCalledWith(200);
 			expect(mockApplyPatch).toHaveBeenCalled();
+
+			const snapshot = handler.getSnapshot("notes/Test.md", "Main Title");
+			expect(snapshot).toBeDefined();
+			expect(snapshot!.filePath).toBe("notes/Test.md");
+			expect(snapshot!.heading).toBe("Main Title");
+			expect(snapshot!.content).toContain("Content. ");
 		});
 
 		it("allows replace on H1 that affects <50% of document", async () => {
@@ -174,6 +179,58 @@ describe("PATCH safety checks", () => {
 			// Should succeed (append is not destructive)
 			expect(res.status).toHaveBeenCalledWith(200);
 			expect(mockApplyPatch).toHaveBeenCalled();
+		});
+	});
+
+	describe("PUT overwrite protection", () => {
+		it("blocks PUT that would dramatically shrink the file", async () => {
+			const content = "# My Note\n\n" + "Important content. ".repeat(200);
+			app.vault.read.mockResolvedValue(content);
+
+			const req = createMockReq({
+				path: "/note/Test",
+				body: "tiny replacement",
+			});
+			const res = createMockRes();
+			await handler.handlePut(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(400);
+			expect(res._jsonBody.errorCode).toBe(40082);
+			expect(res._jsonBody.currentContent).toContain("Important content.");
+		});
+
+		it("allows PUT with confirmation header and stores snapshot", async () => {
+			const content = "# My Note\n\n" + "Important content. ".repeat(200);
+			app.vault.read.mockResolvedValue(content);
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: {
+					"X-Confirm-Dangerous-Operation": "true",
+				},
+				body: "tiny replacement",
+			});
+			const res = createMockRes();
+			await handler.handlePut(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(204);
+			const snapshot = handler.getSnapshot("notes/Test.md", "(full file)");
+			expect(snapshot).toBeDefined();
+			expect(snapshot!.content).toContain("Important content.");
+		});
+
+		it("allows PUT of similar-sized content without confirmation", async () => {
+			const content = "# My Note\n\nOld content here.";
+			app.vault.read.mockResolvedValue(content);
+
+			const req = createMockReq({
+				path: "/note/Test",
+				body: "# My Note\n\nNew content here.",
+			});
+			const res = createMockRes();
+			await handler.handlePut(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(204);
 		});
 	});
 });
