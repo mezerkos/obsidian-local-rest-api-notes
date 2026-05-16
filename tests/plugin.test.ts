@@ -12,6 +12,7 @@ describe("NoteApiExtensionPlugin", () => {
 		plugin = new NoteApiExtensionPlugin();
 		plugin.app = app as any;
 		plugin.manifest = { id: "obsidian-local-rest-api-notes" } as any;
+		plugin.settings = { maxReplaceRatio: 0.5, maxSnapshots: 20 };
 	});
 
 	/** Helper to access private api field */
@@ -48,7 +49,7 @@ describe("NoteApiExtensionPlugin", () => {
 	});
 
 	describe("registerRoutes", () => {
-		it("registers /note/*, /note-move/, and /notes-openapi.yaml routes", () => {
+		it("registers all routes", () => {
 			plugin.registerRoutes();
 
 			const api = getPluginApi();
@@ -56,6 +57,8 @@ describe("NoteApiExtensionPlugin", () => {
 			expect(api.addRoute).toHaveBeenCalledWith("/note/*");
 			expect(api.addRoute).toHaveBeenCalledWith("/note-move/");
 			expect(api.addRoute).toHaveBeenCalledWith("/notes-openapi.yaml");
+			expect(api.addRoute).toHaveBeenCalledWith("/note-snapshots/");
+			expect(api.addRoute).toHaveBeenCalledWith("/note-snapshot/*");
 		});
 
 		it("registers all HTTP methods on /note/* route", () => {

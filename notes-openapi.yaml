@@ -241,6 +241,57 @@ components:
           type: "string"
           description: "New vault path after move."
           example: "4-Archive/Old Note Name.md"
+    DangerousOperationError:
+      type: "object"
+      description: "Returned when a replace/overwrite operation would affect more than the configured threshold and requires confirmation."
+      properties:
+        message:
+          type: "string"
+          description: "Error description with details about the operation impact."
+        errorCode:
+          type: "number"
+          description: "40081 = PATCH replace blocked, 40082 = PUT overwrite blocked."
+        currentContent:
+          type: "string"
+          description: "The full content of the section (or file) that would be replaced. The caller can inspect this and retry with append/prepend or construct a correct replacement."
+        details:
+          type: "object"
+          properties:
+            heading:
+              type: "string"
+              description: "The heading being replaced (PATCH only)."
+            bodySize:
+              type: "number"
+              description: "Size of the incoming body in characters (PUT only)."
+            existingSize:
+              type: "number"
+              description: "Size of the existing content in characters."
+            percentage:
+              type: "number"
+              description: "Percentage of the document that would be affected."
+            threshold:
+              type: "number"
+              description: "The configured maxReplaceRatio threshold."
+    SnapshotEntry:
+      type: "object"
+      properties:
+        key:
+          type: "string"
+          description: "Snapshot key in the format `filePath::heading` for PATCH or `filePath::(full file)` for PUT."
+          example: "1-Projects/TODO.md::Tasks"
+    SnapshotList:
+      type: "object"
+      properties:
+        count:
+          type: "number"
+          description: "Number of snapshots currently stored."
+        maxSnapshots:
+          type: "number"
+          description: "Maximum number of snapshots configured in plugin settings."
+        snapshots:
+          type: "array"
+          items:
+            $ref: "#/components/schemas/SnapshotEntry"
   securitySchemes:
     apiKeyAuth:
       type: "http"
@@ -331,6 +382,21 @@ paths:
       description: |
         Overwrites the content of an existing note resolved by wiki-link name.
         Accepts `text/markdown` or binary content.
+
+        **Overwrite protection:** If the incoming body is significantly smaller than the
+        existing file (below `1.0 - maxReplaceRatio` of the existing size), the operation
+        is blocked with error 40082 and the full existing content is returned in
+        `currentContent`. Set `X-Confirm-Dangerous-Operation: true` to bypass protection.
+        The original content is snapshotted in memory before writing.
+      parameters:
+        - name: "X-Confirm-Dangerous-Operation"
+          in: "header"
+          required: false
+          description: "Set to `true` to confirm a potentially destructive overwrite. When the PUT body is significantly smaller than the existing file, this header is required to proceed. The original file content is snapshotted in memory before writing (see `/note-snapshots/`)."
+          schema:
+            type: "string"
+            enum:
+              - "true"
       requestBody:
         content:
           text/markdown:
@@ -349,16 +415,18 @@ paths:
               schema:
                 type: "string"
         "400":
-          description: "Invalid request body"
+          description: "Invalid request body or overwrite protection blocked"
           content:
             application/json:
               schema:
-                type: "object"
-                properties:
-                  message:
-                    type: "string"
-                  errorCode:
-                    type: "number"
+                oneOf:
+                  - $ref: "#/components/schemas/DangerousOperationError"
+                  - type: "object"
+                    properties:
+                      message:
+                        type: "string"
+                      errorCode:
+                        type: "number"
         "300":
           description: "Ambiguous — multiple notes match"
           content:
@@ -469,6 +537,13 @@ paths:
           description: "If `true`, apply the patch even if the content already exists at the target."
           schema:
             type: "string"
+        - name: "X-Confirm-Dangerous-Operation"
+          in: "header"
+          description: "Set to `true` to confirm a potentially destructive replace operation. When a replace would affect more than `maxReplaceRatio` of the document, this header is required to proceed. The original section content is snapshotted in memory before writing (see `/note-snapshots/`)."
+          schema:
+            type: "string"
+            enum:
+              - "true"
       requestBody:
         required: true
         content:
@@ -491,16 +566,18 @@ paths:
               schema:
                 type: "string"
         "400":
-          description: "Invalid patch parameters or patch failed"
+          description: "Invalid patch parameters, patch failed, or dangerous operation blocked"
           content:
             application/json:
               schema:
-                type: "object"
-                properties:
-                  message:
-                    type: "string"
-                  errorCode:
-                    type: "number"
+                oneOf:
+                  - $ref: "#/components/schemas/DangerousOperationError"
+                  - type: "object"
+                    properties:
+                      message:
+                        type: "string"
+                      errorCode:
+                        type: "number"
         "300":
           description: "Ambiguous — multiple notes match"
           content:
@@ -609,6 +686,16 @@ paths:
       description: |
         Overwrites the content of the current periodic note.
         Creates an empty note if it doesn't exist (no template).
+
+        Same overwrite protection as `/note/*` PUT — see that endpoint for details.
+      parameters:
+        - name: "X-Confirm-Dangerous-Operation"
+          in: "header"
+          required: false
+          schema:
+            type: "string"
+            enum:
+              - "true"
       requestBody:
         content:
           text/markdown:
@@ -631,7 +718,7 @@ paths:
               schema:
                 type: "string"
         "400":
-          description: "Invalid request"
+          description: "Invalid request or overwrite protection blocked"
     post:
       tags:
         - "Periodic Note"
@@ -708,6 +795,12 @@ paths:
           in: "header"
           schema:
             type: "string"
+        - name: "X-Confirm-Dangerous-Operation"
+          in: "header"
+          schema:
+            type: "string"
+            enum:
+              - "true"
       requestBody:
         required: true
         content:
@@ -734,7 +827,7 @@ paths:
               schema:
                 type: "string"
         "400":
-          description: "Invalid patch"
+          description: "Invalid patch or dangerous operation blocked"
         "404":
           description: "Note not found"
     delete:
@@ -827,6 +920,16 @@ paths:
       description: |
         Overwrites the content of a periodic note for the specified date.
         Creates an empty note if it doesn't exist.
+
+        Same overwrite protection as `/note/*` PUT.
+      parameters:
+        - name: "X-Confirm-Dangerous-Operation"
+          in: "header"
+          required: false
+          schema:
+            type: "string"
+            enum:
+              - "true"
       requestBody:
         content:
           text/markdown:
@@ -881,6 +984,12 @@ paths:
           in: "header"
           schema:
             type: "string"
+        - name: "X-Confirm-Dangerous-Operation"
+          in: "header"
+          schema:
+            type: "string"
+            enum:
+              - "true"
       requestBody:
         required: true
         content:
@@ -949,3 +1058,65 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/NoteNotFoundError"
+  /note-snapshots/:
+    get:
+      tags:
+        - "Snapshot"
+      summary: "List all content snapshots"
+      description: |
+        Lists all snapshots stored in memory from confirmed dangerous PATCH replace
+        and PUT overwrite operations. Snapshots are lost when Obsidian is restarted.
+
+        Snapshots are created when an operation exceeds the protection threshold and
+        the caller confirms it with `X-Confirm-Dangerous-Operation: true`.
+      responses:
+        "200":
+          description: "List of snapshot keys"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotList"
+  /note-snapshot/{snapshotPath}:
+    get:
+      tags:
+        - "Snapshot"
+      summary: "Retrieve a snapshot by path and target"
+      description: |
+        Retrieves the original content of a snapshot. The snapshot key is constructed
+        as `filePath::target` where `filePath` is the URL path segment and `target`
+        is the `Target` header value.
+
+        For PUT snapshots, use `(full file)` as the target.
+      parameters:
+        - name: "snapshotPath"
+          in: "path"
+          required: true
+          description: "File path matching the snapshot key (URL-encoded)."
+          schema:
+            type: "string"
+        - name: "Target"
+          in: "header"
+          required: true
+          description: "The snapshot target identifier — heading path for PATCH, `(full file)` for PUT."
+          schema:
+            type: "string"
+      responses:
+        "200":
+          description: "Snapshot content"
+          content:
+            text/markdown:
+              schema:
+                type: "string"
+        "400":
+          description: "Missing Target header"
+          content:
+            application/json:
+              schema:
+                type: "object"
+                properties:
+                  message:
+                    type: "string"
+                  errorCode:
+                    type: "number"
+        "404":
+          description: "Snapshot not found"

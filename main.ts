@@ -158,11 +158,13 @@ class NoteHandler {
 	private app: Plugin["app"];
 	private aliases: AliasCache;
 	private getSettings: () => NoteApiExtensionSettings;
+	private snapshotStore: SnapshotStore;
 
-	constructor(app: Plugin["app"], getSettings: () => NoteApiExtensionSettings) {
+	constructor(app: Plugin["app"], getSettings: () => NoteApiExtensionSettings, snapshotStore: SnapshotStore) {
 		this.app = app;
 		this.aliases = new AliasCache(app);
 		this.getSettings = getSettings;
+		this.snapshotStore = snapshotStore;
 	}
 
 	private resolveNote(name: string): TFile | null {
@@ -574,6 +576,37 @@ class NoteHandler {
 		res.set("Content-Location", encodeURI(file.path));
 
 		if (typeof req.body === "string") {
+			// PUT overwrite protection
+			const fileContents = await this.app.vault.read(file);
+			const existingLength = fileContents.length;
+			const bodyLength = req.body.length;
+			const maxReplaceRatio = this.getSettings().maxReplaceRatio;
+
+			if (maxReplaceRatio > 0 && maxReplaceRatio < 1.0 && existingLength > 0) {
+				const bodyRatio = bodyLength / existingLength;
+				if (bodyRatio < 1.0 - maxReplaceRatio) {
+					const confirmDangerous = req.get("X-Confirm-Dangerous-Operation") === "true";
+					if (!confirmDangerous) {
+						res.status(400).json({
+							message: `PUT body (${bodyLength} chars) is significantly smaller than the existing file (${existingLength} chars). This would overwrite approximately ${Math.round((1 - bodyRatio) * 100)}% of the content. To proceed, add header: X-Confirm-Dangerous-Operation: true`,
+							errorCode: 40082,
+							currentContent: fileContents,
+							details: {
+								bodySize: bodyLength,
+								existingSize: existingLength,
+								percentage: Math.round((1 - bodyRatio) * 100),
+								threshold: Math.round(maxReplaceRatio * 100),
+							}
+						});
+						return;
+					}
+
+					// Confirmed dangerous — snapshot full file
+					const snapshotKey = `${file.path}::(full file)`;
+					this.snapshotStore.set(snapshotKey, fileContents);
+				}
+			}
+
 			await this.app.vault.adapter.write(file.path, req.body);
 		} else if (Buffer.isBuffer(req.body)) {
 			const ab = req.body.buffer.slice(
@@ -678,43 +711,42 @@ class NoteHandler {
 
 			const fileContents = await this.app.vault.read(file);
 
-			// Safety check: prevent accidental replacement of large sections
-			// particularly H1 headings that may contain most of the document
+			// Safety check: prevent accidental replacement of large sections at any heading depth
 			if (operation === "replace" && targetType === "heading") {
 				const confirmDangerous = req.get("X-Confirm-Dangerous-Operation") === "true";
-				
-				// Check if this is a top-level heading (H1) or single heading
-				const isTopLevelHeading = Array.isArray(target) && target.length === 1;
-				
-				if (isTopLevelHeading && !confirmDangerous) {
-					// Get document structure to check section size
-					const { getDocumentMap } = await import("markdown-patch");
-					const docMap = getDocumentMap(fileContents);
-					const headingKey = target[0];
-					const headingInfo = (docMap as any).heading?.[headingKey];
-					
-						const maxReplaceRatio = this.getSettings().maxReplaceRatio;
-						if (headingInfo && maxReplaceRatio > 0 && maxReplaceRatio < 1.0) {
-							const sectionLength = headingInfo.content.end - headingInfo.content.start;
-							const totalLength = fileContents.length;
-							const sectionRatio = sectionLength / totalLength;
-							
-							// If replacing more than maxReplaceRatio of the document, require confirmation
-							if (sectionRatio > maxReplaceRatio) {
-								res.status(400).json({
-									message: `Replace operation on heading "${headingKey}" would affect ${Math.round(sectionRatio * 100)}% of the document (threshold: ${Math.round(maxReplaceRatio * 100)}%). This is a potentially destructive operation. To proceed, add header: X-Confirm-Dangerous-Operation: true`,
-									errorCode: 40081,
-									details: {
-										heading: headingKey,
-										sectionSize: sectionLength,
-										totalSize: totalLength,
-										percentage: Math.round(sectionRatio * 100),
-										threshold: Math.round(maxReplaceRatio * 100),
-									}
-								});
-								return;
-							}
+				const docMap = getDocumentMap(fileContents);
+				const headingKey = (Array.isArray(target) ? target : [target]).join("\u001f");
+				const headingInfo = this.resolveHeadingEntry((docMap as any).heading ?? {}, headingKey);
+
+				const maxReplaceRatio = this.getSettings().maxReplaceRatio;
+				if (headingInfo && maxReplaceRatio > 0 && maxReplaceRatio < 1.0) {
+					const sectionLength = headingInfo.content.end - headingInfo.content.start;
+					const totalLength = fileContents.length;
+					const sectionRatio = sectionLength / totalLength;
+
+					if (sectionRatio > maxReplaceRatio) {
+						const currentContent = fileContents.slice(headingInfo.content.start, headingInfo.content.end);
+
+						if (!confirmDangerous) {
+							res.status(400).json({
+								message: `Replace operation on heading "${rawTarget}" would affect ${Math.round(sectionRatio * 100)}% of the document (threshold: ${Math.round(maxReplaceRatio * 100)}%). This is a potentially destructive operation. To proceed, add header: X-Confirm-Dangerous-Operation: true`,
+								errorCode: 40081,
+								currentContent,
+								details: {
+									heading: rawTarget,
+									sectionSize: sectionLength,
+									totalSize: totalLength,
+									percentage: Math.round(sectionRatio * 100),
+									threshold: Math.round(maxReplaceRatio * 100),
+								}
+							});
+							return;
 						}
+
+						// Confirmed dangerous operation — snapshot original section content
+						const snapshotKey = `${file.path}::${rawTarget}`;
+						this.snapshotStore.set(snapshotKey, currentContent);
+					}
 				}
 			}
 
@@ -735,10 +767,17 @@ class NoteHandler {
 			res.status(200).send(patched);
 		} catch (e) {
 			if (e instanceof PatchFailed) {
-				res.status(400).json({
+				const body: Record<string, unknown> = {
 					message: e.reason,
 					errorCode: 40080,
-				});
+				};
+				try {
+					const section = this.extractSection(fileContents, targetType, req);
+					if (section !== null) {
+						body.currentContent = section;
+					}
+				} catch {}
+				res.status(400).json(body);
 			} else {
 				res.status(500).json({
 					message: (e as Error).message,
@@ -791,6 +830,52 @@ class NoteHandler {
 
 		await this.app.fileManager.renameFile(file, destPath);
 		res.status(200).json({ from: file.path, to: destPath });
+	}
+
+	// --- Snapshot handlers ---
+
+	async handleListSnapshots(_req: any, res: any): Promise<void> {
+		const entries = this.snapshotStore.entries();
+		res.json({
+			count: entries.length,
+			maxSnapshots: this.snapshotStore.max,
+			snapshots: entries.map(([key]) => ({ key })),
+		});
+	}
+
+	async handleGetSnapshot(req: any, res: any): Promise<void> {
+		const rawTarget = req.get("Target");
+		if (!rawTarget) {
+			res.status(400).json({
+				message: "Missing Target header.",
+				errorCode: 40090,
+			});
+			return;
+		}
+
+		const prefix = "/note-snapshot/";
+		const idx = req.path.indexOf(prefix);
+		if (idx === -1) {
+			res.status(400).json({
+				message: "Invalid snapshot path.",
+				errorCode: 40091,
+			});
+			return;
+		}
+		const path = decodeURIComponent(req.path.slice(idx + prefix.length));
+		const snapshotKey = `${path}::${decodeURIComponent(rawTarget)}`;
+		const content = this.snapshotStore.get(snapshotKey);
+
+		if (!content) {
+			res.status(404).json({
+				message: "No snapshot found for the given path and target.",
+				errorCode: 40491,
+			});
+			return;
+		}
+
+		res.set("Content-Type", CONTENT_TYPE_MARKDOWN + "; charset=utf-8");
+		res.send(content);
 	}
 }
 
@@ -1241,14 +1326,67 @@ class PeriodicNoteHandler {
 	}
 }
 
+// --- Snapshot Store ---
+
+class SnapshotStore {
+	private snapshots: Map<string, string> = new Map();
+	private keys: string[] = [];
+	_max: number;
+
+	constructor(max: number) {
+		this._max = max;
+	}
+
+	get max(): number {
+		return this._max;
+	}
+
+	set max(n: number) {
+		this._max = n;
+		this.evict();
+	}
+
+	set(key: string, content: string): void {
+		if (this._max <= 0) return;
+		if (this.snapshots.has(key)) {
+			this.snapshots.set(key, content);
+			return;
+		}
+		this.evict();
+		this.keys.push(key);
+		this.snapshots.set(key, content);
+	}
+
+	get(key: string): string | undefined {
+		return this.snapshots.get(key);
+	}
+
+	entries(): [string, string][] {
+		return this.keys.map((k) => [k, this.snapshots.get(k)!]);
+	}
+
+	count(): number {
+		return this.keys.length;
+	}
+
+	private evict(): void {
+		while (this.keys.length >= this._max) {
+			const oldest = this.keys.shift()!;
+			this.snapshots.delete(oldest);
+		}
+	}
+}
+
 // --- Plugin Settings ---
 
 interface NoteApiExtensionSettings {
 	maxReplaceRatio: number;
+	maxSnapshots: number;
 }
 
 const DEFAULT_SETTINGS: NoteApiExtensionSettings = {
 	maxReplaceRatio: 0.5,
+	maxSnapshots: 20,
 };
 
 // --- Plugin ---
@@ -1256,10 +1394,12 @@ const DEFAULT_SETTINGS: NoteApiExtensionSettings = {
 export default class NoteApiExtensionPlugin extends Plugin {
 	private api: LocalRestApiPublicApi;
 	settings: NoteApiExtensionSettings;
+	snapshotStore: SnapshotStore;
 
 	registerRoutes() {
 		this.api = getAPI(this.app, this.manifest);
-		const handler = new NoteHandler(this.app, () => this.settings);
+		this.snapshotStore = new SnapshotStore(this.settings.maxSnapshots);
+		const handler = new NoteHandler(this.app, () => this.settings, this.snapshotStore);
 		const periodicHandler = new PeriodicNoteHandler(this.app, handler);
 
 		this.api
@@ -1288,6 +1428,14 @@ export default class NoteApiExtensionPlugin extends Plugin {
 				res.set("Content-Type", "text/yaml; charset=utf-8");
 				res.send(openapiYaml);
 			});
+
+		this.api
+			.addRoute("/note-snapshots/")
+			.get(asyncHandler(handler.handleListSnapshots.bind(handler)));
+
+		this.api
+			.addRoute("/note-snapshot/*")
+			.get(asyncHandler(handler.handleGetSnapshot.bind(handler)));
 	}
 
 	async onload() {
@@ -1355,6 +1503,21 @@ class NoteApiExtensionSettingTab extends PluginSettingTab {
 			cls: "setting-item-description"
 		});
 
+		new Setting(containerEl)
+			.setName("Maximum snapshots")
+			.setDesc("Maximum number of snapshot entries kept in memory for confirmed dangerous operations. Snapshots are lost when Obsidian is restarted. Set to 0 to disable snapshots.")
+			.addSlider(slider => slider
+				.setLimits(0, 100, 5)
+				.setValue(this.plugin.settings.maxSnapshots)
+				.setDynamicTooltip()
+				.onChange(async (value) => {
+					this.plugin.settings.maxSnapshots = value;
+					await this.plugin.saveSettings();
+					if (this.plugin.snapshotStore) {
+						this.plugin.snapshotStore.max = value;
+					}
+				}));
+
 		containerEl.createEl("h3", { text: "About PATCH Protection" });
 		containerEl.createEl("p", {
 			text: "The PATCH endpoint allows replacing sections of notes by heading. Replacing an H1 heading that contains most of your document can accidentally delete large amounts of content. This protection blocks such operations unless you explicitly confirm them with the X-Confirm-Dangerous-Operation header."
@@ -1394,4 +1557,4 @@ declare module "obsidian" {
 	}
 }
 
-export { AliasCache, NoteHandler, PeriodicNoteHandler, asyncHandler, CONTENT_TYPE_MARKDOWN, CONTENT_TYPE_NOTE_JSON, CONTENT_TYPE_DOCUMENT_MAP };
+export { AliasCache, NoteHandler, PeriodicNoteHandler, SnapshotStore, asyncHandler, CONTENT_TYPE_MARKDOWN, CONTENT_TYPE_NOTE_JSON, CONTENT_TYPE_DOCUMENT_MAP };

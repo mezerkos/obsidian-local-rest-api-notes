@@ -19,6 +19,7 @@ const V3_PARAM_NAMES = [
 	"Trim-Target-Whitespace",
 	"Create-Target-If-Missing",
 	"Apply-If-Content-Preexists",
+	"X-Confirm-Dangerous-Operation",
 ];
 
 describe("OpenAPI spec", () => {
