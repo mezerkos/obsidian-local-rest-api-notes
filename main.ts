@@ -44,9 +44,55 @@ import {
 	appHasDailyNotesPluginLoaded,
 } from "obsidian-daily-notes-interface";
 
-// --- Configuration ---
-// MAX_REPLACE_RATIO is now configurable via plugin settings
-// See NoteApiExtensionSettings interface and NoteApiExtensionSettingTab class
+// --- Snapshot Store ---
+
+interface Snapshot {
+	key: string;
+	content: string;
+	timestamp: number;
+	filePath: string;
+	target: string;
+}
+
+class SnapshotStore {
+	private snapshots: Snapshot[] = [];
+	private getMaxSnapshots: () => number;
+
+	constructor(getMaxSnapshots: () => number) {
+		this.getMaxSnapshots = getMaxSnapshots;
+	}
+
+	add(filePath: string, target: string, content: string): void {
+		const max = this.getMaxSnapshots();
+		if (max <= 0) return;
+
+		const key = `${filePath}::${target}`;
+		const snapshot: Snapshot = {
+			key,
+			content,
+			timestamp: Date.now(),
+			filePath,
+			target,
+		};
+		this.snapshots.push(snapshot);
+
+		while (this.snapshots.length > max) {
+			this.snapshots.shift();
+		}
+	}
+
+	list(): Omit<Snapshot, "content">[] {
+		return this.snapshots.map(({ content, ...rest }) => rest);
+	}
+
+	get(filePath: string, target: string): Snapshot | undefined {
+		const key = `${filePath}::${target}`;
+		for (let i = this.snapshots.length - 1; i >= 0; i--) {
+			if (this.snapshots[i].key === key) return this.snapshots[i];
+		}
+		return undefined;
+	}
+}
 
 // --- Async handler wrapper (Express doesn't catch async rejections) ---
 
@@ -158,11 +204,13 @@ class NoteHandler {
 	private app: Plugin["app"];
 	private aliases: AliasCache;
 	private getSettings: () => NoteApiExtensionSettings;
+	snapshots: SnapshotStore;
 
-	constructor(app: Plugin["app"], getSettings: () => NoteApiExtensionSettings) {
+	constructor(app: Plugin["app"], getSettings: () => NoteApiExtensionSettings, snapshots?: SnapshotStore) {
 		this.app = app;
 		this.aliases = new AliasCache(app);
 		this.getSettings = getSettings;
+		this.snapshots = snapshots ?? new SnapshotStore(() => this.getSettings().maxSnapshots);
 	}
 
 	private resolveNote(name: string): TFile | null {
@@ -574,6 +622,35 @@ class NoteHandler {
 		res.set("Content-Location", encodeURI(file.path));
 
 		if (typeof req.body === "string") {
+			const maxReplaceRatio = this.getSettings().maxReplaceRatio;
+			if (maxReplaceRatio > 0 && maxReplaceRatio < 1.0) {
+				const existingContent = await this.app.vault.read(file);
+				const existingLength = existingContent.length;
+				const newLength = req.body.length;
+				const minAllowed = existingLength * (1.0 - maxReplaceRatio);
+
+				if (existingLength > 0 && newLength < minAllowed) {
+					const confirmDangerous = req.get("X-Confirm-Dangerous-Operation") === "true";
+
+					if (!confirmDangerous) {
+						res.status(400).json({
+							message: `PUT would replace ${existingLength} bytes with ${newLength} bytes (${Math.round((newLength / existingLength) * 100)}% of original, minimum allowed: ${Math.round((1.0 - maxReplaceRatio) * 100)}%). This is a potentially destructive operation. To proceed, add header: X-Confirm-Dangerous-Operation: true`,
+							errorCode: 40082,
+							currentContent: existingContent,
+							details: {
+								existingSize: existingLength,
+								newSize: newLength,
+								percentage: Math.round((newLength / existingLength) * 100),
+								threshold: Math.round((1.0 - maxReplaceRatio) * 100),
+							}
+						});
+						return;
+					}
+
+					this.snapshots.add(file.path, "(full file)", existingContent);
+				}
+			}
+
 			await this.app.vault.adapter.write(file.path, req.body);
 		} else if (Buffer.isBuffer(req.body)) {
 			const ab = req.body.buffer.slice(
@@ -678,34 +755,31 @@ class NoteHandler {
 
 			const fileContents = await this.app.vault.read(file);
 
-			// Safety check: prevent accidental replacement of large sections
-			// particularly H1 headings that may contain most of the document
 			if (operation === "replace" && targetType === "heading") {
 				const confirmDangerous = req.get("X-Confirm-Dangerous-Operation") === "true";
-				
-				// Check if this is a top-level heading (H1) or single heading
-				const isTopLevelHeading = Array.isArray(target) && target.length === 1;
-				
-				if (isTopLevelHeading && !confirmDangerous) {
-					// Get document structure to check section size
-					const { getDocumentMap } = await import("markdown-patch");
+				const maxReplaceRatio = this.getSettings().maxReplaceRatio;
+
+				if (maxReplaceRatio > 0 && maxReplaceRatio < 1.0) {
 					const docMap = getDocumentMap(fileContents);
-					const headingKey = target[0];
-					const headingInfo = (docMap as any).heading?.[headingKey];
-					
-						const maxReplaceRatio = this.getSettings().maxReplaceRatio;
-						if (headingInfo && maxReplaceRatio > 0 && maxReplaceRatio < 1.0) {
-							const sectionLength = headingInfo.content.end - headingInfo.content.start;
-							const totalLength = fileContents.length;
-							const sectionRatio = sectionLength / totalLength;
-							
-							// If replacing more than maxReplaceRatio of the document, require confirmation
-							if (sectionRatio > maxReplaceRatio) {
+					const headingKey = Array.isArray(target) ? target.join("") : target;
+					const headingInfo = this.resolveHeadingEntry((docMap as any).heading ?? {}, headingKey);
+
+					if (headingInfo) {
+						const sectionLength = headingInfo.content.end - headingInfo.content.start;
+						const totalLength = fileContents.length;
+						const sectionRatio = sectionLength / totalLength;
+
+						if (sectionRatio > maxReplaceRatio) {
+							const displayHeading = Array.isArray(target) ? target.join("::") : target;
+							const currentContent = fileContents.slice(headingInfo.content.start, headingInfo.content.end);
+
+							if (!confirmDangerous) {
 								res.status(400).json({
-									message: `Replace operation on heading "${headingKey}" would affect ${Math.round(sectionRatio * 100)}% of the document (threshold: ${Math.round(maxReplaceRatio * 100)}%). This is a potentially destructive operation. To proceed, add header: X-Confirm-Dangerous-Operation: true`,
+									message: `Replace operation on heading "${displayHeading}" would affect ${Math.round(sectionRatio * 100)}% of the document (threshold: ${Math.round(maxReplaceRatio * 100)}%). This is a potentially destructive operation. To proceed, add header: X-Confirm-Dangerous-Operation: true`,
 									errorCode: 40081,
+									currentContent,
 									details: {
-										heading: headingKey,
+										heading: displayHeading,
 										sectionSize: sectionLength,
 										totalSize: totalLength,
 										percentage: Math.round(sectionRatio * 100),
@@ -714,7 +788,10 @@ class NoteHandler {
 								});
 								return;
 							}
+
+							this.snapshots.add(file.path, displayHeading, currentContent);
 						}
+					}
 				}
 			}
 
@@ -735,10 +812,19 @@ class NoteHandler {
 			res.status(200).send(patched);
 		} catch (e) {
 			if (e instanceof PatchFailed) {
-				res.status(400).json({
+				const errorBody: Record<string, unknown> = {
 					message: e.reason,
 					errorCode: 40080,
-				});
+				};
+				if (targetType === "heading") {
+					const headingKey = Array.isArray(target) ? target.join("") : target;
+					const docMap = getDocumentMap(fileContents);
+					const entry = this.resolveHeadingEntry((docMap as any).heading ?? {}, headingKey);
+					if (entry) {
+						errorBody.currentContent = fileContents.slice(entry.content.start, entry.content.end);
+					}
+				}
+				res.status(400).json(errorBody);
 			} else {
 				res.status(500).json({
 					message: (e as Error).message,
@@ -1245,10 +1331,12 @@ class PeriodicNoteHandler {
 
 interface NoteApiExtensionSettings {
 	maxReplaceRatio: number;
+	maxSnapshots: number;
 }
 
 const DEFAULT_SETTINGS: NoteApiExtensionSettings = {
 	maxReplaceRatio: 0.5,
+	maxSnapshots: 20,
 };
 
 // --- Plugin ---
@@ -1259,7 +1347,8 @@ export default class NoteApiExtensionPlugin extends Plugin {
 
 	registerRoutes() {
 		this.api = getAPI(this.app, this.manifest);
-		const handler = new NoteHandler(this.app, () => this.settings);
+		const snapshots = new SnapshotStore(() => this.settings.maxSnapshots);
+		const handler = new NoteHandler(this.app, () => this.settings, snapshots);
 		const periodicHandler = new PeriodicNoteHandler(this.app, handler);
 
 		this.api
@@ -1281,6 +1370,28 @@ export default class NoteApiExtensionPlugin extends Plugin {
 		this.api
 			.addRoute("/note-move/")
 			.post(asyncHandler(handler.handleMove.bind(handler)));
+
+		this.api
+			.addRoute("/note-snapshots/")
+			.get((_req: any, res: any) => {
+				res.json(snapshots.list());
+			});
+
+		this.api
+			.addRoute("/note-snapshot/*")
+			.get((req: any, res: any) => {
+				const filePath = decodeURIComponent(req.path.slice("/note-snapshot/".length));
+				const target = req.get("Target") ? decodeURIComponent(req.get("Target")) : "(full file)";
+				const snapshot = snapshots.get(filePath, target);
+				if (!snapshot) {
+					res.status(404).json({
+						message: "No snapshot found for the specified path and target.",
+						errorCode: 40464,
+					});
+					return;
+				}
+				res.json(snapshot);
+			});
 
 		this.api
 			.addRoute("/notes-openapi.yaml")
@@ -1355,19 +1466,27 @@ class NoteApiExtensionSettingTab extends PluginSettingTab {
 			cls: "setting-item-description"
 		});
 
-		containerEl.createEl("h3", { text: "About PATCH Protection" });
-		containerEl.createEl("p", {
-			text: "The PATCH endpoint allows replacing sections of notes by heading. Replacing an H1 heading that contains most of your document can accidentally delete large amounts of content. This protection blocks such operations unless you explicitly confirm them with the X-Confirm-Dangerous-Operation header."
-		});
+		new Setting(containerEl)
+			.setName("Snapshot retention limit")
+			.setDesc("Maximum number of snapshots to keep in memory. When a dangerous replace or overwrite is confirmed, the original content is saved as a snapshot. Oldest snapshots are evicted first. Set to 0 to disable snapshots.")
+			.addSlider(slider => slider
+				.setLimits(0, 100, 1)
+				.setValue(this.plugin.settings.maxSnapshots)
+				.setDynamicTooltip()
+				.onChange(async (value) => {
+					this.plugin.settings.maxSnapshots = value;
+					await this.plugin.saveSettings();
+				}));
 
 		containerEl.createEl("p", {
-			text: "Examples:",
+			text: `Current snapshot limit: ${this.plugin.settings.maxSnapshots}`,
 			cls: "setting-item-description"
 		});
-		const examplesList = containerEl.createEl("ul", { cls: "setting-item-description" });
-		examplesList.createEl("li", { text: "0% (0.0) - Disables protection entirely" });
-		examplesList.createEl("li", { text: "50% (0.5) - Default - Blocks replacing sections larger than half the document" });
-		examplesList.createEl("li", { text: "100% (1.0) - Allows any size (effectively disables protection)" });
+
+		containerEl.createEl("h3", { text: "About Protection" });
+		containerEl.createEl("p", {
+			text: "PATCH replace and PUT overwrite operations are checked against the protection threshold. If the operation would affect more than the configured percentage of the document, it is blocked unless you explicitly confirm with the X-Confirm-Dangerous-Operation header. Confirmed dangerous operations save a snapshot of the original content."
+		});
 	}
 }
 
@@ -1394,4 +1513,4 @@ declare module "obsidian" {
 	}
 }
 
-export { AliasCache, NoteHandler, PeriodicNoteHandler, asyncHandler, CONTENT_TYPE_MARKDOWN, CONTENT_TYPE_NOTE_JSON, CONTENT_TYPE_DOCUMENT_MAP };
+export { AliasCache, NoteHandler, PeriodicNoteHandler, SnapshotStore, asyncHandler, CONTENT_TYPE_MARKDOWN, CONTENT_TYPE_NOTE_JSON, CONTENT_TYPE_DOCUMENT_MAP };

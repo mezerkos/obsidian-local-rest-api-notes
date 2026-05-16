@@ -216,6 +216,110 @@ components:
               type: "string"
               description: "The date requested by the client (may differ from date if normalization occurred)."
               example: "2026-02-31"
+    ProtectionError:
+      type: "object"
+      description: "Returned when a destructive operation is blocked by replace/overwrite protection."
+      required:
+        - "message"
+        - "errorCode"
+        - "currentContent"
+        - "details"
+      properties:
+        message:
+          type: "string"
+          description: "Human-readable description of why the operation was blocked."
+        errorCode:
+          type: "number"
+          description: "Error code: 40081 (PATCH heading replace), 40082 (PUT overwrite)."
+          enum:
+            - 40081
+            - 40082
+        currentContent:
+          type: "string"
+          description: "The full content at the target that would have been replaced. For PATCH, this is the heading section content. For PUT, this is the entire file."
+        details:
+          type: "object"
+          description: "Numeric details about the protection check."
+          properties:
+            heading:
+              type: "string"
+              description: "Heading path (PATCH only)."
+            sectionSize:
+              type: "number"
+              description: "Size of the section in bytes (PATCH only)."
+            existingSize:
+              type: "number"
+              description: "Existing file size in bytes (PUT only)."
+            newSize:
+              type: "number"
+              description: "New content size in bytes (PUT only)."
+            totalSize:
+              type: "number"
+              description: "Total document size in bytes."
+            percentage:
+              type: "number"
+              description: "Percentage of document affected."
+            threshold:
+              type: "number"
+              description: "Configured threshold percentage."
+    PatchFailedError:
+      type: "object"
+      description: "Returned when a PATCH operation fails (e.g. target not found)."
+      required:
+        - "message"
+        - "errorCode"
+      properties:
+        message:
+          type: "string"
+        errorCode:
+          type: "number"
+          example: 40080
+        currentContent:
+          type: "string"
+          description: "Content at the target heading, if the target exists. Helps callers construct a correct replacement."
+    Snapshot:
+      type: "object"
+      description: "A snapshot of original content saved before a confirmed dangerous operation."
+      required:
+        - "key"
+        - "content"
+        - "timestamp"
+        - "filePath"
+        - "target"
+      properties:
+        key:
+          type: "string"
+          description: "Snapshot key in format `filePath::target`."
+          example: "notes/Test.md::Main Title"
+        content:
+          type: "string"
+          description: "The original content before the operation."
+        timestamp:
+          type: "number"
+          description: "Unix timestamp (ms) when the snapshot was created."
+        filePath:
+          type: "string"
+          description: "Vault path of the file."
+        target:
+          type: "string"
+          description: "Target identifier — heading path or `(full file)` for PUT."
+    SnapshotSummary:
+      type: "object"
+      description: "Snapshot metadata without content (used in list endpoint)."
+      required:
+        - "key"
+        - "timestamp"
+        - "filePath"
+        - "target"
+      properties:
+        key:
+          type: "string"
+        timestamp:
+          type: "number"
+        filePath:
+          type: "string"
+        target:
+          type: "string"
     MoveRequest:
       type: "object"
       required:
@@ -331,6 +435,21 @@ paths:
       description: |
         Overwrites the content of an existing note resolved by wiki-link name.
         Accepts `text/markdown` or binary content.
+
+        **Overwrite protection:** If the incoming content is significantly smaller
+        than the existing file (below `1.0 - maxReplaceRatio` of existing size),
+        the operation is blocked with error 40082. The response includes the full
+        existing content in `currentContent`. Add `X-Confirm-Dangerous-Operation: true`
+        to bypass. Confirmed operations save a snapshot of the original content.
+      parameters:
+        - name: "X-Confirm-Dangerous-Operation"
+          in: "header"
+          required: false
+          description: "Set to `true` to bypass overwrite protection when the new content is significantly smaller than the existing file."
+          schema:
+            type: "string"
+            enum:
+              - "true"
       requestBody:
         content:
           text/markdown:
@@ -349,16 +468,18 @@ paths:
               schema:
                 type: "string"
         "400":
-          description: "Invalid request body"
+          description: "Invalid request body or overwrite protection triggered"
           content:
             application/json:
               schema:
-                type: "object"
-                properties:
-                  message:
-                    type: "string"
-                  errorCode:
-                    type: "number"
+                oneOf:
+                  - $ref: "#/components/schemas/ProtectionError"
+                  - type: "object"
+                    properties:
+                      message:
+                        type: "string"
+                      errorCode:
+                        type: "number"
         "300":
           description: "Ambiguous — multiple notes match"
           content:
@@ -422,6 +543,12 @@ paths:
       description: |
         Applies a structured patch to a note using `Target-Type`, `Operation`, and `Target` headers.
         Supports append/prepend/replace on headings, blocks, and frontmatter fields.
+
+        **Replace protection:** When `Operation: replace` targets a heading that contains
+        more than `maxReplaceRatio` of the document, the operation is blocked with error
+        40081. The response includes the section content in `currentContent`. Add
+        `X-Confirm-Dangerous-Operation: true` to bypass. Confirmed operations save a
+        snapshot of the original content.
       parameters:
         - name: "Operation"
           in: "header"
@@ -454,6 +581,14 @@ paths:
           schema:
             type: "string"
             default: "::"
+        - name: "X-Confirm-Dangerous-Operation"
+          in: "header"
+          required: false
+          description: "Set to `true` to bypass replace protection when the target section exceeds the configured threshold."
+          schema:
+            type: "string"
+            enum:
+              - "true"
         - name: "Trim-Target-Whitespace"
           in: "header"
           description: "If `true`, trim whitespace around the target content."
@@ -491,16 +626,19 @@ paths:
               schema:
                 type: "string"
         "400":
-          description: "Invalid patch parameters or patch failed"
+          description: "Invalid patch parameters, patch failed, or replace protection triggered"
           content:
             application/json:
               schema:
-                type: "object"
-                properties:
-                  message:
-                    type: "string"
-                  errorCode:
-                    type: "number"
+                oneOf:
+                  - $ref: "#/components/schemas/ProtectionError"
+                  - $ref: "#/components/schemas/PatchFailedError"
+                  - type: "object"
+                    properties:
+                      message:
+                        type: "string"
+                      errorCode:
+                        type: "number"
         "300":
           description: "Ambiguous — multiple notes match"
           content:
@@ -949,3 +1087,63 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/NoteNotFoundError"
+  /note-snapshots/:
+    get:
+      tags:
+        - "Snapshot"
+      summary: "List all snapshots"
+      description: |
+        Returns a list of all in-memory snapshots (without content).
+        Snapshots are created when a dangerous replace or overwrite operation
+        is confirmed via `X-Confirm-Dangerous-Operation: true`.
+        Retention is controlled by the `maxSnapshots` setting (default 20, FIFO eviction).
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                type: "array"
+                items:
+                  $ref: "#/components/schemas/SnapshotSummary"
+  /note-snapshot/{path}:
+    parameters:
+      - name: "path"
+        in: "path"
+        required: true
+        description: "Vault path of the file (URL-encoded)."
+        schema:
+          type: "string"
+    get:
+      tags:
+        - "Snapshot"
+      summary: "Retrieve a snapshot"
+      description: |
+        Returns the most recent snapshot for the given file path and target.
+        Use the `Target` header to specify the heading (or omit for full-file PUT snapshots).
+      parameters:
+        - name: "Target"
+          in: "header"
+          required: false
+          description: "The heading target. Defaults to `(full file)` for PUT snapshots."
+          schema:
+            type: "string"
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Snapshot"
+        "404":
+          description: "No snapshot found"
+          content:
+            application/json:
+              schema:
+                type: "object"
+                properties:
+                  message:
+                    type: "string"
+                  errorCode:
+                    type: "number"
+                    example: 40464
