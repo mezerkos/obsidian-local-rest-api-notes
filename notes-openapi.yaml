@@ -1,7 +1,7 @@
 openapi: "3.0.2"
 info:
   title: "Local REST API — Note Extension"
-  version: "1.4.0"
+  version: "1.5.0"
   description: |
     Adds wiki-link name resolution endpoints to Local REST API for Obsidian.
 
@@ -241,6 +241,96 @@ components:
           type: "string"
           description: "New vault path after move."
           example: "4-Archive/Old Note Name.md"
+    ProtectionError:
+      type: "object"
+      properties:
+        message:
+          type: "string"
+          description: "Error message explaining why the operation was blocked."
+          example: "Replace operation on heading \"Tasks\" would affect 75% of the document (threshold: 50%). This is a potentially destructive operation. To proceed, add header: X-Confirm-Dangerous-Operation: true"
+        errorCode:
+          type: "number"
+          description: "Error code."
+          example: 40081
+        currentContent:
+          type: "string"
+          description: "The full content of the section that would have been replaced. Present in protection errors to help the caller inspect the target."
+        details:
+          type: "object"
+          description: "Additional details about the protection violation."
+          properties:
+            heading:
+              type: "string"
+              description: "The heading path that would be affected (for PATCH)."
+              example: "Tasks"
+            sectionSize:
+              type: "number"
+              description: "Size in bytes of the section that would be replaced."
+              example: 15000
+            totalSize:
+              type: "number"
+              description: "Total size in bytes of the document."
+              example: 20000
+            percentage:
+              type: "number"
+              description: "Percentage of the document that would be affected."
+              example: 75
+            threshold:
+              type: "number"
+              description: "Configured threshold percentage."
+              example: 50
+            existingSize:
+              type: "number"
+              description: "Size of existing file in bytes (for PUT)."
+              example: 20000
+            newSize:
+              type: "number"
+              description: "Size of new content in bytes (for PUT)."
+              example: 100
+    Snapshot:
+      type: "object"
+      required:
+        - "timestamp"
+        - "filePath"
+        - "target"
+        - "content"
+      properties:
+        timestamp:
+          type: "number"
+          description: "Unix timestamp (milliseconds) when the snapshot was created."
+          example: 1715788800000
+        filePath:
+          type: "string"
+          description: "Vault path of the file."
+          example: "1-Projects/TODO.md"
+        target:
+          type: "string"
+          description: "Target that was replaced (heading path or \"(full file)\" for PUT)."
+          example: "Tasks"
+        content:
+          type: "string"
+          description: "Original content before the dangerous operation."
+    SnapshotList:
+      type: "object"
+      properties:
+        snapshots:
+          type: "array"
+          description: "List of snapshots, most recent first. Limited to configured maxSnapshots."
+          items:
+            type: "object"
+            properties:
+              timestamp:
+                type: "number"
+                description: "Unix timestamp when snapshot was created."
+              filePath:
+                type: "string"
+                description: "Vault path of the file."
+              target:
+                type: "string"
+                description: "Target that was replaced."
+              contentLength:
+                type: "number"
+                description: "Length of the snapshotted content in characters."
   securitySchemes:
     apiKeyAuth:
       type: "http"
@@ -331,6 +421,23 @@ paths:
       description: |
         Overwrites the content of an existing note resolved by wiki-link name.
         Accepts `text/markdown` or binary content.
+
+        **Protection**: If the new content is significantly smaller than the existing
+        file (below `1.0 - maxReplaceRatio` of existing size), the operation is blocked
+        with error 40082 unless `X-Confirm-Dangerous-Operation: true` is provided.
+        When blocked, the response includes `currentContent` with the full existing content.
+        When confirmed and the operation proceeds, the original content is snapshotted.
+      parameters:
+        - name: "X-Confirm-Dangerous-Operation"
+          in: "header"
+          required: false
+          description: |
+            Set to `true` to confirm a dangerous overwrite operation that would
+            replace more than the configured threshold of the document.
+          schema:
+            type: "string"
+            enum:
+              - "true"
       requestBody:
         content:
           text/markdown:
@@ -349,16 +456,18 @@ paths:
               schema:
                 type: "string"
         "400":
-          description: "Invalid request body"
+          description: "Invalid request body or dangerous operation blocked"
           content:
             application/json:
               schema:
-                type: "object"
-                properties:
-                  message:
-                    type: "string"
-                  errorCode:
-                    type: "number"
+                oneOf:
+                  - type: "object"
+                    properties:
+                      message:
+                        type: "string"
+                      errorCode:
+                        type: "number"
+                  - $ref: "#/components/schemas/ProtectionError"
         "300":
           description: "Ambiguous — multiple notes match"
           content:
@@ -422,6 +531,14 @@ paths:
       description: |
         Applies a structured patch to a note using `Target-Type`, `Operation`, and `Target` headers.
         Supports append/prepend/replace on headings, blocks, and frontmatter fields.
+
+        **Protection**: When `Operation: replace` is used on a heading, the system checks
+        if the section being replaced exceeds `maxReplaceRatio` of the total document.
+        If so, the operation is blocked with error 40081 unless
+        `X-Confirm-Dangerous-Operation: true` is provided. This protection applies to
+        ALL heading depths (not just H1). When blocked, the response includes
+        `currentContent` with the section that would have been replaced. When confirmed
+        and the operation proceeds, the original content is snapshotted.
       parameters:
         - name: "Operation"
           in: "header"
@@ -469,6 +586,16 @@ paths:
           description: "If `true`, apply the patch even if the content already exists at the target."
           schema:
             type: "string"
+        - name: "X-Confirm-Dangerous-Operation"
+          in: "header"
+          required: false
+          description: |
+            Set to `true` to confirm a dangerous replace operation that would
+            affect more than the configured threshold of the document.
+          schema:
+            type: "string"
+            enum:
+              - "true"
       requestBody:
         required: true
         content:
@@ -491,16 +618,18 @@ paths:
               schema:
                 type: "string"
         "400":
-          description: "Invalid patch parameters or patch failed"
+          description: "Invalid patch parameters, patch failed, or dangerous operation blocked"
           content:
             application/json:
               schema:
-                type: "object"
-                properties:
-                  message:
-                    type: "string"
-                  errorCode:
-                    type: "number"
+                oneOf:
+                  - type: "object"
+                    properties:
+                      message:
+                        type: "string"
+                      errorCode:
+                        type: "number"
+                  - $ref: "#/components/schemas/ProtectionError"
         "300":
           description: "Ambiguous — multiple notes match"
           content:
@@ -949,3 +1078,72 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/NoteNotFoundError"
+  /note-snapshots/:
+    get:
+      tags:
+        - "Snapshots"
+      summary: "List all snapshots"
+      description: |
+        Returns a list of all snapshots created from confirmed dangerous operations.
+        Snapshots are created when a PUT or PATCH replace operation exceeds the
+        protection threshold and is confirmed with `X-Confirm-Dangerous-Operation: true`.
+        
+        Snapshots are retained in memory up to the configured `maxSnapshots` limit
+        (default 20). Oldest snapshots are evicted first (FIFO).
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotList"
+  /note-snapshot/{path}:
+    parameters:
+      - name: "path"
+        in: "path"
+        required: true
+        description: |
+          Vault path of the file (e.g., "1-Projects/TODO.md").
+          URL-encoded.
+        schema:
+          type: "string"
+    get:
+      tags:
+        - "Snapshots"
+      summary: "Get a specific snapshot"
+      description: |
+        Returns the full snapshot content for a specific file and target.
+        
+        Use the `Target` header to specify which section to retrieve:
+        - For PUT snapshots: `Target: (full file)` or omit the header
+        - For PATCH snapshots: `Target: Heading Name` or `Target: Parent::Child`
+      parameters:
+        - name: "Target"
+          in: "header"
+          required: false
+          description: |
+            The target identifier (heading path or "(full file)" for PUT).
+            Defaults to "(full file)" if not provided.
+          schema:
+            type: "string"
+            default: "(full file)"
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Snapshot"
+        "404":
+          description: "Snapshot not found"
+          content:
+            application/json:
+              schema:
+                type: "object"
+                properties:
+                  message:
+                    type: "string"
+                    example: "No snapshot found for 1-Projects/TODO.md with target \"Tasks\""
+                  errorCode:
+                    type: "number"
+                    example: 40464

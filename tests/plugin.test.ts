@@ -6,13 +6,18 @@ describe("NoteApiExtensionPlugin", () => {
 	let app: ReturnType<typeof createMockApp>;
 	let plugin: NoteApiExtensionPlugin;
 
-	beforeEach(() => {
-		app = createMockApp();
-		app.vault.getMarkdownFiles.mockReturnValue([]);
-		plugin = new NoteApiExtensionPlugin();
-		plugin.app = app as any;
-		plugin.manifest = { id: "obsidian-local-rest-api-notes" } as any;
-	});
+beforeEach(() => {
+			app = createMockApp();
+			app.vault.getMarkdownFiles.mockReturnValue([]);
+			plugin = new NoteApiExtensionPlugin();
+			plugin.app = app as any;
+			plugin.manifest = { id: "obsidian-local-rest-api-notes" } as any;
+			// Initialize settings with defaults
+			plugin.settings = {
+				maxReplaceRatio: 0.5,
+				maxSnapshots: 20,
+			};
+		});
 
 	/** Helper to access private api field */
 	function getPluginApi(): any {

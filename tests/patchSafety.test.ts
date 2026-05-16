@@ -32,7 +32,7 @@ describe("PATCH safety checks", () => {
 	beforeEach(() => {
 		app = createMockApp();
 		app.vault.getMarkdownFiles.mockReturnValue([]);
-		handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+		handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 
 		file = new TFile("notes/Test.md");
 		app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);

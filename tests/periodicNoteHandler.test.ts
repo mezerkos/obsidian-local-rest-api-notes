@@ -16,7 +16,7 @@ describe("PeriodicNoteHandler", () => {
 
 		app = createMockApp();
 		app.vault.getMarkdownFiles.mockReturnValue([]);
-		noteHandler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+		noteHandler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 		handler = new PeriodicNoteHandler(app as any, noteHandler);
 
 		// Setup moment mock
