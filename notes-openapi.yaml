@@ -230,10 +230,11 @@ components:
           description: "Human-readable description of why the operation was blocked."
         errorCode:
           type: "number"
-          description: "Error code: 40081 (PATCH heading replace), 40082 (PUT overwrite)."
+          description: "Error code: 40081 (PATCH section exceeds document ratio), 40082 (PUT overwrite), 40083 (PATCH section truncation)."
           enum:
             - 40081
             - 40082
+            - 40083
         currentContent:
           type: "string"
           description: "The full content at the target that would have been replaced. For PATCH, this is the heading section content. For PUT, this is the entire file."
@@ -247,6 +248,9 @@ components:
             sectionSize:
               type: "number"
               description: "Size of the section in bytes (PATCH only)."
+            replacementSize:
+              type: "number"
+              description: "Size of the replacement content in bytes (40083 only)."
             existingSize:
               type: "number"
               description: "Existing file size in bytes (PUT only)."
@@ -258,7 +262,7 @@ components:
               description: "Total document size in bytes."
             percentage:
               type: "number"
-              description: "Percentage of document affected."
+              description: "Percentage ratio that triggered the protection."
             threshold:
               type: "number"
               description: "Configured threshold percentage."
@@ -549,6 +553,12 @@ paths:
         40081. The response includes the section content in `currentContent`. Add
         `X-Confirm-Dangerous-Operation: true` to bypass. Confirmed operations save a
         snapshot of the original content.
+
+        **Section truncation protection:** Even if the target section is small relative
+        to the whole document, if the replacement content is significantly smaller than
+        the section itself (below `1.0 - maxReplaceRatio` of the section size), the
+        operation is blocked with error 40083. This prevents silently deleting most of
+        a section's content. Same bypass header and snapshot behavior as 40081.
       parameters:
         - name: "Operation"
           in: "header"

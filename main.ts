@@ -768,11 +768,13 @@ class NoteHandler {
 						const sectionLength = headingInfo.content.end - headingInfo.content.start;
 						const totalLength = fileContents.length;
 						const sectionRatio = sectionLength / totalLength;
+						const displayHeading = Array.isArray(target) ? target.join("::") : target;
+						const currentContent = fileContents.slice(headingInfo.content.start, headingInfo.content.end);
 
+						let snapshotted = false;
+
+						// R1: whole-document ratio check
 						if (sectionRatio > maxReplaceRatio) {
-							const displayHeading = Array.isArray(target) ? target.join("::") : target;
-							const currentContent = fileContents.slice(headingInfo.content.start, headingInfo.content.end);
-
 							if (!confirmDangerous) {
 								res.status(400).json({
 									message: `Replace operation on heading "${displayHeading}" would affect ${Math.round(sectionRatio * 100)}% of the document (threshold: ${Math.round(maxReplaceRatio * 100)}%). This is a potentially destructive operation. To proceed, add header: X-Confirm-Dangerous-Operation: true`,
@@ -790,6 +792,31 @@ class NoteHandler {
 							}
 
 							this.snapshots.add(file.path, displayHeading, currentContent);
+							snapshotted = true;
+						}
+
+						// R6: section-level truncation check
+						const replacementLength = typeof req.body === "string" ? req.body.length : 0;
+						if (sectionLength > 0 && replacementLength / sectionLength < (1.0 - maxReplaceRatio)) {
+							if (!confirmDangerous) {
+								res.status(400).json({
+									message: `Replace on heading "${displayHeading}" would truncate section from ${sectionLength} to ${replacementLength} chars (${Math.round((replacementLength / sectionLength) * 100)}% of section, minimum: ${Math.round((1.0 - maxReplaceRatio) * 100)}%). This is a potentially destructive operation. To proceed, add header: X-Confirm-Dangerous-Operation: true`,
+									errorCode: 40083,
+									currentContent,
+									details: {
+										heading: displayHeading,
+										sectionSize: sectionLength,
+										replacementSize: replacementLength,
+										percentage: Math.round((replacementLength / sectionLength) * 100),
+										threshold: Math.round((1.0 - maxReplaceRatio) * 100),
+									}
+								});
+								return;
+							}
+
+							if (!snapshotted) {
+								this.snapshots.add(file.path, displayHeading, currentContent);
+							}
 						}
 					}
 				}

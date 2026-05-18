@@ -99,7 +99,7 @@ describe("PATCH safety checks", () => {
 					"Target-Type": "heading",
 					Target: "Main Title",
 				},
-				body: "New content",
+				body: "Replacement. ".repeat(20),
 			});
 			const res = createMockRes();
 			await handler.handlePatch(req, res);
@@ -224,6 +224,124 @@ describe("PATCH safety checks", () => {
 			expect(res._jsonBody.errorCode).toBe(40080);
 			expect(res._jsonBody.currentContent).toBeDefined();
 			expect(res._jsonBody.currentContent).toContain("Some content.");
+		});
+	});
+
+	// R6: Section-level truncation protection
+	describe("section truncation protection", () => {
+		it("blocks replace that truncates a small section significantly", async () => {
+			// Section is small relative to the doc (won't trigger R1), but replacement is tiny relative to the section
+			const content = "# Other\n\n" + "Other content. ".repeat(200) + "\n\n# Target Section\n\n" + "Important data. ".repeat(50) + "\n\n# Another\n\nMore stuff.";
+			app.vault.read.mockResolvedValue(content);
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: {
+					Operation: "replace",
+					"Target-Type": "heading",
+					Target: "Target Section",
+				},
+				body: "- [ ] todo",
+			});
+			const res = createMockRes();
+			await handler.handlePatch(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(400);
+			expect(res._jsonBody.errorCode).toBe(40083);
+			expect(res._jsonBody.message).toContain("truncate section");
+			expect(res._jsonBody.currentContent).toContain("Important data.");
+			expect(res._jsonBody.details.replacementSize).toBe(10);
+			expect(mockApplyPatch).not.toHaveBeenCalled();
+		});
+
+		it("allows replace when replacement is similar size to section", async () => {
+			const sectionContent = "Some content in section.";
+			const content = "# Other\n\n" + "Filler. ".repeat(100) + "\n\n# Target\n\n" + sectionContent + "\n\n# Another\n\nMore.";
+			app.vault.read.mockResolvedValue(content);
+			mockApplyPatch.mockReturnValue("patched");
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: {
+					Operation: "replace",
+					"Target-Type": "heading",
+					Target: "Target",
+				},
+				body: "Replacement of similar length!",
+			});
+			const res = createMockRes();
+			await handler.handlePatch(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(200);
+			expect(mockApplyPatch).toHaveBeenCalled();
+		});
+
+		it("allows truncating replace with confirmation header", async () => {
+			const content = "# Other\n\n" + "Other. ".repeat(200) + "\n\n# Target\n\n" + "Data. ".repeat(50) + "\n\n# End\n\nDone.";
+			app.vault.read.mockResolvedValue(content);
+			mockApplyPatch.mockReturnValue("patched");
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: {
+					Operation: "replace",
+					"Target-Type": "heading",
+					Target: "Target",
+					"X-Confirm-Dangerous-Operation": "true",
+				},
+				body: "tiny",
+			});
+			const res = createMockRes();
+			await handler.handlePatch(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(200);
+			expect(mockApplyPatch).toHaveBeenCalled();
+		});
+
+		it("snapshots section content when confirmed truncation proceeds", async () => {
+			const content = "# Other\n\n" + "Other. ".repeat(200) + "\n\n# Target\n\n" + "Data to save. ".repeat(50) + "\n\n# End\n\nDone.";
+			app.vault.read.mockResolvedValue(content);
+			mockApplyPatch.mockReturnValue("patched");
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: {
+					Operation: "replace",
+					"Target-Type": "heading",
+					Target: "Target",
+					"X-Confirm-Dangerous-Operation": "true",
+				},
+				body: "tiny",
+			});
+			const res = createMockRes();
+			await handler.handlePatch(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(200);
+			const snapshots = handler.snapshots.list();
+			expect(snapshots.length).toBe(1);
+			expect(snapshots[0].filePath).toBe("notes/Test.md");
+			expect(snapshots[0].target).toBe("Target");
+		});
+
+		it("does not trigger for append/prepend operations", async () => {
+			const content = "# Target\n\n" + "Lots of content. ".repeat(50);
+			app.vault.read.mockResolvedValue(content);
+			mockApplyPatch.mockReturnValue("patched");
+
+			const req = createMockReq({
+				path: "/note/Test",
+				headers: {
+					Operation: "append",
+					"Target-Type": "heading",
+					Target: "Target",
+				},
+				body: "tiny",
+			});
+			const res = createMockRes();
+			await handler.handlePatch(req, res);
+
+			expect(res.status).toHaveBeenCalledWith(200);
+			expect(mockApplyPatch).toHaveBeenCalled();
 		});
 	});
 
