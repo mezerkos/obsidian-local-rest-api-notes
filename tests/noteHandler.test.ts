@@ -11,7 +11,7 @@ describe("NoteHandler", () => {
 		app = createMockApp();
 		// Provide empty markdown files list for AliasCache initial build
 		app.vault.getMarkdownFiles.mockReturnValue([]);
-		handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+		handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 	});
 
 	// --- extractName ---
@@ -74,7 +74,7 @@ describe("NoteHandler", () => {
 			});
 
 			// Re-create handler to pick up new files
-			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 
 			const req = createMockReq({ path: "/note/Alias" });
 			const res = createMockRes();
@@ -107,7 +107,7 @@ describe("NoteHandler", () => {
 			app.metadataCache.getFileCache.mockReturnValue(null);
 
 			// Re-create to pick up files
-			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 
 			const req = createMockReq({ path: "/note/App" });
 			const res = createMockRes();
@@ -126,7 +126,7 @@ describe("NoteHandler", () => {
 			app.metadataCache.getFirstLinkpathDest.mockReturnValue(null);
 			app.metadataCache.getFileCache.mockReturnValue(null);
 
-			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 
 			const req = createMockReq({ path: "/note/Note" });
 			const res = createMockRes();
@@ -146,7 +146,7 @@ describe("NoteHandler", () => {
 			app.metadataCache.getFileCache.mockReturnValue(null);
 			app.vault.read.mockResolvedValue("some content");
 
-			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 
 			const req = createMockReq({ path: "/note/TODO" });
 			const res = createMockRes();
@@ -168,7 +168,7 @@ describe("NoteHandler", () => {
 			app.metadataCache.getFileCache.mockReturnValue(null);
 			app.vault.read.mockResolvedValue("content");
 
-			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 
 			const req = createMockReq({ path: "/note/Sub/Note" });
 			const res = createMockRes();
@@ -188,7 +188,7 @@ describe("NoteHandler", () => {
 			}));
 			app.vault.read.mockResolvedValue("alias content");
 
-			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 
 			const req = createMockReq({ path: "/note/SharedAlias" });
 			const res = createMockRes();
@@ -208,7 +208,7 @@ describe("NoteHandler", () => {
 				new TextEncoder().encode("content").buffer
 			);
 
-			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 
 			const req = createMockReq({ path: "/note/Unique" });
 			const res = createMockRes();
@@ -225,7 +225,7 @@ describe("NoteHandler", () => {
 			app.metadataCache.getFileCache.mockReturnValue(null);
 			app.vault.read.mockResolvedValue("content");
 
-			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 
 			const req = createMockReq({ path: "/note/Note", body: "content" });
 			const res = createMockRes();
@@ -242,7 +242,7 @@ describe("NoteHandler", () => {
 			app.metadataCache.getFileCache.mockReturnValue(null);
 			app.vault.read.mockResolvedValue("content");
 
-			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 
 			const req = createMockReq({ path: "/note/Note" });
 			const res = createMockRes();
@@ -264,7 +264,7 @@ describe("NoteHandler", () => {
 			});
 			app.vault.read.mockResolvedValue("content");
 
-			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 
 			const req = createMockReq({ path: "/note/RealName" });
 			const res = createMockRes();
@@ -294,7 +294,7 @@ describe("NoteHandler", () => {
 				new TextEncoder().encode("# Tasks\nDo stuff\n").buffer
 			);
 
-			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 
 			const req = createMockReq({
 				path: "/note/TODO",
@@ -325,7 +325,7 @@ describe("NoteHandler", () => {
 				return "No blocks here.\n";
 			});
 
-			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 
 			const req = createMockReq({
 				path: "/note/Note",
@@ -352,7 +352,7 @@ describe("NoteHandler", () => {
 			app.metadataCache.getFileCache.mockReturnValue(null);
 			app.vault.read.mockResolvedValue("# Tasks\nSome tasks\n");
 
-			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 
 			const req = createMockReq({
 				path: "/note/Note",
@@ -378,7 +378,7 @@ describe("NoteHandler", () => {
 			app.metadataCache.getFileCache.mockReturnValue(null);
 			app.vault.read.mockResolvedValue("# Other\nNo match\n");
 
-			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 
 			const req = createMockReq({
 				path: "/note/Note",
@@ -404,7 +404,7 @@ describe("NoteHandler", () => {
 			app.metadataCache.getFileCache.mockReturnValue(null);
 			app.vault.read.mockResolvedValue("content");
 
-			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 
 			const req = createMockReq({ path: "/note/Note" });
 			const res = createMockRes();
@@ -426,7 +426,7 @@ describe("NoteHandler", () => {
 			app.metadataCache.getFileCache.mockReturnValue(null);
 			app.vault.read.mockResolvedValue("x".repeat(300));
 
-			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 
 			const req = createMockReq({ path: "/note/Note" });
 			const res = createMockRes();
@@ -447,7 +447,7 @@ describe("NoteHandler", () => {
 			const longContent = Array.from({ length: 20 }, (_, i) => `Line ${i + 1}`).join("\n");
 			app.vault.read.mockResolvedValue(longContent);
 
-			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 
 			const req = createMockReq({ path: "/note/Note" });
 			const res = createMockRes();
@@ -470,7 +470,7 @@ describe("NoteHandler", () => {
 				"---\ntitle: Test\n---\n# Title\nSome intro.\n## Overview\nThis is the overview content.\n## Details\nMore stuff."
 			);
 
-			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 
 			const req = createMockReq({ path: "/note/Note" });
 			const res = createMockRes();
@@ -493,7 +493,7 @@ describe("NoteHandler", () => {
 				"---\ntitle: Test\ntags: [foo]\n---\n# My Note\nActual content here."
 			);
 
-			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 
 			const req = createMockReq({ path: "/note/Note" });
 			const res = createMockRes();
@@ -520,7 +520,7 @@ describe("NoteHandler", () => {
 				return "# Other\nNo tasks\n";
 			});
 
-			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5 }));
+			handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
 
 			const req = createMockReq({
 				path: "/note/Note",
