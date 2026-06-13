@@ -1,7 +1,7 @@
 openapi: "3.0.2"
 info:
   title: "Local REST API — Note Extension"
-  version: "1.4.1"
+  version: "1.4.3"
   description: |
     Adds wiki-link name resolution endpoints to Local REST API for Obsidian.
 
@@ -604,6 +604,15 @@ paths:
           description: "If `true`, trim whitespace around the target content."
           schema:
             type: "string"
+        - name: "Ensure-Newline"
+          in: "header"
+          description: "Ensure patched content has surrounding newlines to prevent gluing with adjacent text. Defaults to `true`. Send `false` to disable."
+          schema:
+            type: "string"
+            default: "true"
+            enum:
+              - "true"
+              - "false"
         - name: "Create-Target-If-Missing"
           in: "header"
           description: "If `true`, create the target (heading/block/frontmatter key) if it doesn't exist."
@@ -856,6 +865,15 @@ paths:
           in: "header"
           schema:
             type: "string"
+        - name: "Ensure-Newline"
+          in: "header"
+          description: "Ensure patched content has surrounding newlines to prevent gluing with adjacent text. Defaults to `true`. Send `false` to disable."
+          schema:
+            type: "string"
+            default: "true"
+            enum:
+              - "true"
+              - "false"
       requestBody:
         required: true
         content:

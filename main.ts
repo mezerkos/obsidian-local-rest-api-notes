@@ -717,6 +717,7 @@ class NoteHandler {
 			req.get("Apply-If-Content-Preexists") === "true";
 		const trimTargetWhitespace =
 			req.get("Trim-Target-Whitespace") === "true";
+		const ensureNewline = req.get("Ensure-Newline") !== "false";
 		const targetDelimiter = req.get("Target-Delimiter") || "::";
 
 		const target =
@@ -822,12 +823,30 @@ class NoteHandler {
 				}
 			}
 
-			const instruction: PatchInstruction = {
+			// Ensure content has surrounding newlines to prevent gluing with
+		// adjacent content.  markdown-patch's appendText/prependText do a
+		// raw join("") so missing newlines cause lines to merge.
+		// Callers can opt out by sending "Ensure-Newline: false".
+		let patchContent = req.body;
+		if (
+			ensureNewline &&
+			typeof patchContent === "string" &&
+			patchContent.length > 0
+		) {
+			if (!patchContent.startsWith("\n") && !patchContent.startsWith("\r\n")) {
+				patchContent = "\n" + patchContent;
+			}
+			if (!patchContent.endsWith("\n")) {
+				patchContent += "\n";
+			}
+		}
+
+		const instruction: PatchInstruction = {
 			operation: operation as PatchOperation,
 			targetType: targetType as PatchTargetType,
 			target,
 			contentType: contentType as ContentType,
-			content: req.body,
+			content: patchContent,
 			applyIfContentPreexists,
 			trimTargetWhitespace,
 			createTargetIfMissing,
