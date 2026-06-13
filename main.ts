@@ -24,6 +24,17 @@ import {
 	PatchTargetType,
 } from "markdown-patch";
 import mime from "mime-types";
+
+class AmbiguousHeadingError extends Error {
+	paths: string[];
+	constructor(leaf: string, paths: string[]) {
+		super(
+			`Ambiguous heading "${leaf}" matches ${paths.length} headings. ` +
+			`Use the full path: ${paths.join(", ")}`
+		);
+		this.paths = paths;
+	}
+}
 import openapiYaml from "./notes-openapi.yaml";
 import {
 	getAllDailyNotes,
@@ -283,7 +294,9 @@ class NoteHandler {
 				const content = await this.app.vault.read(file);
 				const targets = this.findMatchingTargets(content, targetType, target, delimiter);
 				if (targets.length > 0) matching.push(file);
-			} catch {
+			} catch (e) {
+				// Ambiguous heading means the target exists in this file
+				if (e instanceof AmbiguousHeadingError) matching.push(file);
 				// skip unreadable files
 			}
 		}
@@ -526,9 +539,22 @@ class NoteHandler {
 				const metadata = await this.getFileMetadata(file, req);
 
 			if (targetType) {
-				const section = this.extractSection(
-					metadata.content as string, targetType, req
-				);
+				let section: string | null;
+				try {
+					section = this.extractSection(
+						metadata.content as string, targetType, req
+					);
+				} catch (e) {
+					if (e instanceof AmbiguousHeadingError) {
+						res.status(400).json({
+							message: e.message,
+							errorCode: 40081,
+							matches: e.paths,
+						});
+						return;
+					}
+					throw e;
+				}
 				if (section === null) {
 					res.status(404).json({
 						message: `Target not found in note.`,
@@ -547,7 +573,20 @@ class NoteHandler {
 		// Read content (text for section extraction, binary otherwise)
 		if (targetType) {
 			const content = await this.app.vault.read(file);
-			const section = this.extractSection(content, targetType, req);
+			let section: string | null;
+			try {
+				section = this.extractSection(content, targetType, req);
+			} catch (e) {
+				if (e instanceof AmbiguousHeadingError) {
+					res.status(400).json({
+						message: e.message,
+						errorCode: 40081,
+						matches: e.paths,
+					});
+					return;
+				}
+				throw e;
+			}
 			if (section === null) {
 				res.status(404).json({
 					message: `Target not found in note.`,
@@ -572,15 +611,24 @@ class NoteHandler {
 		res.send(Buffer.from(content));
 	}
 
-	/** Look up a heading entry by exact key, falling back to leaf-name match. */
+	/** Look up a heading entry by exact key, falling back to leaf-name match.
+	 *  Throws AmbiguousHeadingError if multiple headings match the leaf name. */
 	private resolveHeadingEntry(headingMap: Record<string, any>, key: string): any | undefined {
 		const exact = headingMap[key];
 		if (exact) return exact;
 
 		// Fallback: match by leaf name (last segment after \u001f)
 		const suffix = "\u001f" + key;
+		const matches: { fullKey: string; entry: any }[] = [];
 		for (const [k, v] of Object.entries(headingMap)) {
-			if (k.endsWith(suffix)) return v;
+			if (k.endsWith(suffix)) {
+				matches.push({ fullKey: k, entry: v });
+			}
+		}
+		if (matches.length === 1) return matches[0].entry;
+		if (matches.length > 1) {
+			const paths = matches.map(m => m.fullKey.replace(/\u001f/g, "::"));
+			throw new AmbiguousHeadingError(key, paths);
 		}
 		return undefined;
 	}
@@ -857,7 +905,13 @@ class NoteHandler {
 			await this.app.vault.adapter.write(file.path, patched);
 			res.status(200).send(patched);
 		} catch (e) {
-			if (e instanceof PatchFailed) {
+			if (e instanceof AmbiguousHeadingError) {
+				res.status(400).json({
+					message: e.message,
+					errorCode: 40081,
+					matches: e.paths,
+				});
+			} else if (e instanceof PatchFailed) {
 				const errorBody: Record<string, unknown> = {
 					message: e.reason,
 					errorCode: 40080,
@@ -865,9 +919,15 @@ class NoteHandler {
 				if (targetType === "heading") {
 					const headingKey = Array.isArray(target) ? target.join("") : target;
 					const docMap = getDocumentMap(fileContents);
-					const entry = this.resolveHeadingEntry((docMap as any).heading ?? {}, headingKey);
-					if (entry) {
-						errorBody.currentContent = fileContents.slice(entry.content.start, entry.content.end);
+					try {
+						const entry = this.resolveHeadingEntry((docMap as any).heading ?? {}, headingKey);
+						if (entry) {
+							errorBody.currentContent = fileContents.slice(entry.content.start, entry.content.end);
+						}
+					} catch (resolveErr) {
+						if (resolveErr instanceof AmbiguousHeadingError) {
+							errorBody.matches = resolveErr.paths;
+						}
 					}
 				}
 				res.status(400).json(errorBody);
