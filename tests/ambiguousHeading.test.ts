@@ -100,7 +100,7 @@ describe("Ambiguous heading resolution", () => {
 			await handler.handleGet(req, res);
 
 			expect(res.status).toHaveBeenCalledWith(400);
-			expect(res._jsonBody.errorCode).toBe(40081);
+			expect(res._jsonBody.errorCode).toBe(40084);
 			expect(res._jsonBody.matches).toBeDefined();
 			expect(res._jsonBody.matches.length).toBeGreaterThan(1);
 			// Should include the full paths for disambiguation

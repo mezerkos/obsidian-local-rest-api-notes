@@ -230,7 +230,7 @@ components:
           description: "Human-readable description of why the operation was blocked."
         errorCode:
           type: "number"
-          description: "Error code: 40081 (PATCH section exceeds document ratio), 40082 (PUT overwrite), 40083 (PATCH section truncation)."
+          description: "Error code: 40081 (PATCH section exceeds document ratio), 40082 (PUT overwrite), 40083 (PATCH section truncation). Note: an ambiguous heading target returns a separate 40084 error with a different shape (`matches` instead of `currentContent`/`details`)."
           enum:
             - 40081
             - 40082
@@ -392,7 +392,7 @@ paths:
         - name: "Target"
           in: "header"
           required: false
-          description: "The target identifier (heading path or block ID). URL-encoded. Required when `Target-Type` is set."
+          description: "The target identifier (heading path or bare/partial leaf, or block ID). URL-encoded. Required when `Target-Type` is set. A bare/partial heading leaf resolves to its full path; an ambiguous leaf returns 400 (40084) with `matches`."
           schema:
             type: "string"
         - name: "Target-Delimiter"
@@ -548,6 +548,13 @@ paths:
         Applies a structured patch to a note using `Target-Type`, `Operation`, and `Target` headers.
         Supports append/prepend/replace on headings, blocks, and frontmatter fields.
 
+        **Heading targets:** For `Target-Type: heading`, the `Target` may be a fully
+        qualified path (`Parent::Leaf`) or a bare/partial leaf (`Leaf`) — bare leaves
+        are resolved to their full heading path before patching, matching GET behavior.
+        A leaf that matches multiple headings returns 40084 with the candidate full
+        paths in `matches`. An unmatched target is passed through unchanged so
+        `Create-Target-If-Missing: true` can still create it.
+
         **Replace protection:** When `Operation: replace` targets a heading that contains
         more than `maxReplaceRatio` of the document, the operation is blocked with error
         40081. The response includes the section content in `currentContent`. Add
@@ -582,7 +589,7 @@ paths:
               - "frontmatter"
         - name: "Target"
           in: "header"
-          description: "The target identifier (heading path, block ID, or frontmatter key). URL-encoded."
+          description: "The target identifier (heading path or bare/partial leaf, block ID, or frontmatter key). URL-encoded."
           schema:
             type: "string"
         - name: "Target-Delimiter"
