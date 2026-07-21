@@ -24,6 +24,17 @@ import {
 	PatchTargetType,
 } from "markdown-patch";
 import mime from "mime-types";
+
+class AmbiguousHeadingError extends Error {
+	paths: string[];
+	constructor(leaf: string, paths: string[]) {
+		super(
+			`Ambiguous heading "${leaf}" matches ${paths.length} headings. ` +
+			`Use the full path: ${paths.join(", ")}`
+		);
+		this.paths = paths;
+	}
+}
 import openapiYaml from "./notes-openapi.yaml";
 import {
 	getAllDailyNotes,
@@ -283,7 +294,9 @@ class NoteHandler {
 				const content = await this.app.vault.read(file);
 				const targets = this.findMatchingTargets(content, targetType, target, delimiter);
 				if (targets.length > 0) matching.push(file);
-			} catch {
+			} catch (e) {
+				// Ambiguous heading means the target exists in this file
+				if (e instanceof AmbiguousHeadingError) matching.push(file);
 				// skip unreadable files
 			}
 		}
@@ -526,9 +539,22 @@ class NoteHandler {
 				const metadata = await this.getFileMetadata(file, req);
 
 			if (targetType) {
-				const section = this.extractSection(
-					metadata.content as string, targetType, req
-				);
+				let section: string | null;
+				try {
+					section = this.extractSection(
+						metadata.content as string, targetType, req
+					);
+				} catch (e) {
+					if (e instanceof AmbiguousHeadingError) {
+						res.status(400).json({
+							message: e.message,
+							errorCode: 40084,
+							matches: e.paths,
+						});
+						return;
+					}
+					throw e;
+				}
 				if (section === null) {
 					res.status(404).json({
 						message: `Target not found in note.`,
@@ -547,7 +573,20 @@ class NoteHandler {
 		// Read content (text for section extraction, binary otherwise)
 		if (targetType) {
 			const content = await this.app.vault.read(file);
-			const section = this.extractSection(content, targetType, req);
+			let section: string | null;
+			try {
+				section = this.extractSection(content, targetType, req);
+			} catch (e) {
+				if (e instanceof AmbiguousHeadingError) {
+					res.status(400).json({
+						message: e.message,
+						errorCode: 40084,
+						matches: e.paths,
+					});
+					return;
+				}
+				throw e;
+			}
 			if (section === null) {
 				res.status(404).json({
 					message: `Target not found in note.`,
@@ -572,17 +611,32 @@ class NoteHandler {
 		res.send(Buffer.from(content));
 	}
 
-	/** Look up a heading entry by exact key, falling back to leaf-name match. */
-	private resolveHeadingEntry(headingMap: Record<string, any>, key: string): any | undefined {
-		const exact = headingMap[key];
-		if (exact) return exact;
+	/** Resolve a (possibly leaf-only or partial) heading key to its fully
+	 *  qualified document-map key. Returns the \u001f-joined full key, or
+	 *  undefined when no heading matches. Throws AmbiguousHeadingError if the
+	 *  leaf name matches multiple headings. */
+	private resolveHeadingKey(headingMap: Record<string, any>, key: string): string | undefined {
+		if (headingMap[key]) return key;
 
-		// Fallback: match by leaf name (last segment after \u001f)
+		// Fallback: match by leaf name (trailing segments after \u001f)
 		const suffix = "\u001f" + key;
-		for (const [k, v] of Object.entries(headingMap)) {
-			if (k.endsWith(suffix)) return v;
+		const matches: string[] = [];
+		for (const k of Object.keys(headingMap)) {
+			if (k.endsWith(suffix)) matches.push(k);
+		}
+		if (matches.length === 1) return matches[0];
+		if (matches.length > 1) {
+			const paths = matches.map((m) => m.replace(/\u001f/g, "::"));
+			throw new AmbiguousHeadingError(key, paths);
 		}
 		return undefined;
+	}
+
+	/** Look up a heading entry by exact key, falling back to leaf-name match.
+	 *  Throws AmbiguousHeadingError if multiple headings match the leaf name. */
+	private resolveHeadingEntry(headingMap: Record<string, any>, key: string): any | undefined {
+		const fullKey = this.resolveHeadingKey(headingMap, key);
+		return fullKey !== undefined ? headingMap[fullKey] : undefined;
 	}
 
 	private extractSection(
@@ -717,9 +771,10 @@ class NoteHandler {
 			req.get("Apply-If-Content-Preexists") === "true";
 		const trimTargetWhitespace =
 			req.get("Trim-Target-Whitespace") === "true";
+		const ensureNewline = req.get("Ensure-Newline") !== "false";
 		const targetDelimiter = req.get("Target-Delimiter") || "::";
 
-		const target =
+		let target =
 			targetType === "heading"
 				? rawTarget.split(targetDelimiter)
 				: rawTarget;
@@ -754,6 +809,38 @@ class NoteHandler {
 		}
 
 			const fileContents = await this.app.vault.read(file);
+
+			// Resolve a bare-leaf or partial heading target to its fully qualified
+			// path before patching. The read path (GET) already resolves leaf
+			// headings via resolveHeadingEntry, but markdown-patch's applyPatch
+			// requires the full heading path and rejects a bare leaf with 40080
+			// invalid-target. Applying the same resolution here keeps PATCH
+			// symmetric with GET. A unique leaf resolves; an ambiguous one returns
+			// 40084; an unmatched target is left untouched so Create-Target-If-Missing
+			// can still create it.
+			if (targetType === "heading" && Array.isArray(target)) {
+				const requestedKey = target.join("\u001f");
+				let fullKey: string | undefined;
+				try {
+					fullKey = this.resolveHeadingKey(
+						(getDocumentMap(fileContents) as any).heading ?? {},
+						requestedKey
+					);
+				} catch (e) {
+					if (e instanceof AmbiguousHeadingError) {
+						res.status(400).json({
+							message: e.message,
+							errorCode: 40084,
+							matches: e.paths,
+						});
+						return;
+					}
+					throw e;
+				}
+				if (fullKey !== undefined) {
+					target = fullKey.split("\u001f");
+				}
+			}
 
 			if (operation === "replace" && targetType === "heading") {
 				const confirmDangerous = req.get("X-Confirm-Dangerous-Operation") === "true";
@@ -822,12 +909,30 @@ class NoteHandler {
 				}
 			}
 
-			const instruction: PatchInstruction = {
+			// Ensure content has surrounding newlines to prevent gluing with
+		// adjacent content.  markdown-patch's appendText/prependText do a
+		// raw join("") so missing newlines cause lines to merge.
+		// Callers can opt out by sending "Ensure-Newline: false".
+		let patchContent = req.body;
+		if (
+			ensureNewline &&
+			typeof patchContent === "string" &&
+			patchContent.length > 0
+		) {
+			if (!patchContent.startsWith("\n") && !patchContent.startsWith("\r\n")) {
+				patchContent = "\n" + patchContent;
+			}
+			if (!patchContent.endsWith("\n")) {
+				patchContent += "\n";
+			}
+		}
+
+		const instruction: PatchInstruction = {
 			operation: operation as PatchOperation,
 			targetType: targetType as PatchTargetType,
 			target,
 			contentType: contentType as ContentType,
-			content: req.body,
+			content: patchContent,
 			applyIfContentPreexists,
 			trimTargetWhitespace,
 			createTargetIfMissing,
@@ -838,7 +943,13 @@ class NoteHandler {
 			await this.app.vault.adapter.write(file.path, patched);
 			res.status(200).send(patched);
 		} catch (e) {
-			if (e instanceof PatchFailed) {
+			if (e instanceof AmbiguousHeadingError) {
+				res.status(400).json({
+					message: e.message,
+					errorCode: 40084,
+					matches: e.paths,
+				});
+			} else if (e instanceof PatchFailed) {
 				const errorBody: Record<string, unknown> = {
 					message: e.reason,
 					errorCode: 40080,
@@ -846,9 +957,16 @@ class NoteHandler {
 				if (targetType === "heading") {
 					const headingKey = Array.isArray(target) ? target.join("") : target;
 					const docMap = getDocumentMap(fileContents);
-					const entry = this.resolveHeadingEntry((docMap as any).heading ?? {}, headingKey);
-					if (entry) {
-						errorBody.currentContent = fileContents.slice(entry.content.start, entry.content.end);
+					try {
+						const entry = this.resolveHeadingEntry((docMap as any).heading ?? {}, headingKey);
+						if (entry) {
+							errorBody.currentContent = fileContents.slice(entry.content.start, entry.content.end);
+						}
+					} catch (resolveErr) {
+						if (resolveErr instanceof AmbiguousHeadingError) {
+							errorBody.errorCode = 40084;
+							errorBody.matches = resolveErr.paths;
+						}
 					}
 				}
 				res.status(400).json(errorBody);

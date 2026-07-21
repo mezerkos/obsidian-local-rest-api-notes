@@ -22,6 +22,16 @@ Copy or symlink `main.js` and `manifest.json` into your vault's `.obsidian/plugi
 
 The full OpenAPI specification is served at `/notes-openapi.yaml` when the plugin is running.
 
+### Heading targets
+
+For `Target-Type: heading`, both GET and PATCH accept a **bare leaf** or **partial**
+heading (e.g. `Target: Section A`) as well as a fully qualified path
+(`Target: Doc::Section A`). A unique leaf is resolved to its full heading path
+before the patch is applied; a leaf that matches multiple headings returns
+`400` with `errorCode: 40084` and the candidate paths in `matches`. An unmatched
+target is passed through unchanged so `Create-Target-If-Missing: true` can still
+create it.
+
 ## Periodic Notes API
 
 The `/periodic-note/*` endpoints provide enhanced access to periodic notes, improving upon the base `/periodic/` API from the parent plugin.

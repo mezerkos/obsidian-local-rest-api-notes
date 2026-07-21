@@ -12,3 +12,8 @@ writeFileSync("manifest.json", JSON.stringify(manifest, null, "\t"));
 let versions = JSON.parse(readFileSync("versions.json", "utf8"));
 versions[targetVersion] = minAppVersion;
 writeFileSync("versions.json", JSON.stringify(versions, null, "\t"));
+
+// update version in notes-openapi.yaml
+let openapi = readFileSync("notes-openapi.yaml", "utf8");
+openapi = openapi.replace(/^(  version: ").+(")$/m, `$1${targetVersion}$2`);
+writeFileSync("notes-openapi.yaml", openapi);

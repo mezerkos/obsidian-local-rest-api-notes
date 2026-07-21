@@ -3,8 +3,11 @@ import { NoteHandler } from "../main";
 import { TFile, createMockApp } from "../mocks/obsidian";
 import { createMockReq, createMockRes } from "../mocks/express";
 
-// Mock markdown-patch at the module level
-vi.mock("markdown-patch", () => {
+// Mock markdown-patch at the module level. applyPatch is mocked so we can
+// assert on the resolved target/instruction; getDocumentMap keeps its real
+// implementation so leaf-heading resolution runs against a real parse tree.
+vi.mock("markdown-patch", async () => {
+	const actual = await vi.importActual("markdown-patch");
 	class PatchFailed extends Error {
 		reason: string;
 		constructor(reason: string) {
@@ -14,6 +17,7 @@ vi.mock("markdown-patch", () => {
 		}
 	}
 	return {
+		...actual,
 		applyPatch: vi.fn(),
 		PatchFailed,
 	};
@@ -288,5 +292,178 @@ describe("PATCH /note/* (V3)", () => {
 		await handler.handlePatch(req, res);
 
 		expect(res.status).toHaveBeenCalledWith(404);
+	});
+});
+
+describe("PATCH /note/* leaf-heading resolution", () => {
+	let app: ReturnType<typeof createMockApp>;
+	let handler: NoteHandler;
+	let file: TFile;
+
+	// H2 "Section A"/"Section B" are nested under H1 "Doc"; full doc-map keys
+	// are "Doc<US>Section A" etc. A bare "Section A" must resolve to the full
+	// path before reaching applyPatch (which requires the full heading path).
+	const CONTENT = [
+		"# Doc",
+		"",
+		"## Section A",
+		"",
+		"Body A.",
+		"",
+		"## Section B",
+		"",
+		"Body B.",
+	].join("\n");
+
+	// Two "Notes" leaves under different parents -> ambiguous.
+	const CONTENT_AMBIGUOUS = [
+		"# Doc",
+		"",
+		"## Section A",
+		"",
+		"### Notes",
+		"",
+		"Notes under A.",
+		"",
+		"## Section B",
+		"",
+		"### Notes",
+		"",
+		"Notes under B.",
+	].join("\n");
+
+	beforeEach(() => {
+		app = createMockApp();
+		app.vault.getMarkdownFiles.mockReturnValue([]);
+		handler = new NoteHandler(app as any, () => ({ maxReplaceRatio: 0.5, maxSnapshots: 20 }));
+
+		file = new TFile("notes/Test.md");
+		app.metadataCache.getFirstLinkpathDest.mockReturnValue(file);
+		mockApplyPatch.mockReset();
+		mockApplyPatch.mockReturnValue("patched");
+	});
+
+	it("resolves a bare leaf heading to its full path before patching", async () => {
+		app.vault.read.mockResolvedValue(CONTENT);
+
+		const req = createMockReq({
+			path: "/note/Test",
+			headers: {
+				"Target-Type": "heading",
+				Operation: "append",
+				Target: "Section A",
+				"Content-Type": "text/markdown",
+			},
+			body: "added",
+		});
+		const res = createMockRes();
+		await handler.handlePatch(req, res);
+
+		expect(res.status).toHaveBeenCalledWith(200);
+		expect(mockApplyPatch).toHaveBeenCalledWith(
+			CONTENT,
+			expect.objectContaining({
+				target: ["Doc", "Section A"],
+				targetType: "heading",
+			})
+		);
+	});
+
+	it("resolves a partial heading path to its full path", async () => {
+		app.vault.read.mockResolvedValue(CONTENT_AMBIGUOUS);
+
+		const req = createMockReq({
+			path: "/note/Test",
+			headers: {
+				"Target-Type": "heading",
+				Operation: "append",
+				Target: "Section A%3A%3ANotes",
+				"Content-Type": "text/markdown",
+			},
+			body: "added",
+		});
+		const res = createMockRes();
+		await handler.handlePatch(req, res);
+
+		expect(res.status).toHaveBeenCalledWith(200);
+		expect(mockApplyPatch).toHaveBeenCalledWith(
+			CONTENT_AMBIGUOUS,
+			expect.objectContaining({
+				target: ["Doc", "Section A", "Notes"],
+			})
+		);
+	});
+
+	it("returns 400 (40084) for an ambiguous bare leaf heading", async () => {
+		app.vault.read.mockResolvedValue(CONTENT_AMBIGUOUS);
+
+		const req = createMockReq({
+			path: "/note/Test",
+			headers: {
+				"Target-Type": "heading",
+				Operation: "append",
+				Target: "Notes",
+				"Content-Type": "text/markdown",
+			},
+			body: "added",
+		});
+		const res = createMockRes();
+		await handler.handlePatch(req, res);
+
+		expect(res.status).toHaveBeenCalledWith(400);
+		expect(res._jsonBody.errorCode).toBe(40084);
+		expect(res._jsonBody.matches).toContain("Doc::Section A::Notes");
+		expect(res._jsonBody.matches).toContain("Doc::Section B::Notes");
+		expect(mockApplyPatch).not.toHaveBeenCalled();
+	});
+
+	it("leaves an unmatched target untouched so it can be created", async () => {
+		app.vault.read.mockResolvedValue(CONTENT);
+
+		const req = createMockReq({
+			path: "/note/Test",
+			headers: {
+				"Target-Type": "heading",
+				Operation: "append",
+				Target: "Brand New",
+				"Content-Type": "text/markdown",
+				"Create-Target-If-Missing": "true",
+			},
+			body: "added",
+		});
+		const res = createMockRes();
+		await handler.handlePatch(req, res);
+
+		expect(res.status).toHaveBeenCalledWith(200);
+		expect(mockApplyPatch).toHaveBeenCalledWith(
+			CONTENT,
+			expect.objectContaining({
+				target: ["Brand New"],
+				createTargetIfMissing: true,
+			})
+		);
+	});
+
+	it("resolves a top-level heading to itself (no spurious change)", async () => {
+		app.vault.read.mockResolvedValue(CONTENT);
+
+		const req = createMockReq({
+			path: "/note/Test",
+			headers: {
+				"Target-Type": "heading",
+				Operation: "append",
+				Target: "Doc",
+				"Content-Type": "text/markdown",
+			},
+			body: "added",
+		});
+		const res = createMockRes();
+		await handler.handlePatch(req, res);
+
+		expect(res.status).toHaveBeenCalledWith(200);
+		expect(mockApplyPatch).toHaveBeenCalledWith(
+			CONTENT,
+			expect.objectContaining({ target: ["Doc"] })
+		);
 	});
 });
